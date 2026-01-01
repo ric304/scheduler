@@ -13,6 +13,11 @@
 - 依存サービス: Redis + RDB（開発ではSQLiteでも開始可能だが、推奨はPostgreSQL）
 - gRPC: mTLS（開発は長期自己署名証明書を許容）
 
+補足（K8sについて）:
+- テスト効率のため、当面は **K8s環境（kind/minikube等）の構築は後回し** にします。
+  - ローカル（WSL + docker compose + 複数 `scheduler_worker`）でフェーズF（実ジョブ実行）まで進められます。
+  - K8sマニフェスト/証明書更新（M7）は後段でまとめて整備します。
+
 ---
 
 ## 1. 前提ソフト
@@ -20,13 +25,37 @@
 - Windows: WSL2（Ubuntu等）
 - WSL: Python 3.13, Git
 - WSL: Docker Engine（Docker Desktopは不要）
+- Windows: VS Code
 
 ### 1.1 WSL2（Ubuntu）の準備（概要）
 
 - WSL2を有効化し、Ubuntuをインストール
 - VS Code で Remote - WSL を使用して、WSL上で作業することを推奨
 
-### 1.2 WSLへ Docker Engine を入れる（Docker Desktopなし）
+### 1.2 VS Code（Remote - WSL）セットアップ（推奨）
+
+VS CodeはWindows側にインストールし、実作業はWSL上で行います。
+
+1) Windows側に VS Code をインストール
+
+2) VS Code 拡張をインストール（Windows側）
+
+- Remote - WSL（拡張ID: `ms-vscode-remote.remote-wsl`）
+
+3) WSL上のフォルダを VS Code で開く
+
+- WSLターミナルでリポジトリへ移動し、`code .`
+  - 例: `cd /mnt/c/vscode/Scheduler && code .`
+
+4) Pythonインタープリタを venv に合わせる
+
+- コマンドパレット: `Python: Select Interpreter`
+- `./venv/bin/python`（WSL側）を選択
+
+注: Remote - WSLでは、拡張は「Windows側」と「WSL側」で別々に入ります。
+Python系の拡張は、WSLで開いたワークスペース側にもインストールしてください。
+
+### 1.3 WSLへ Docker Engine を入れる（Docker Desktopなし）
 
 WSLのUbuntu上で実施。
 
@@ -39,6 +68,7 @@ WSLのUbuntu上で実施。
 
 - `sudo install -m 0755 -d /etc/apt/keyrings`
 - `curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg`
+- `echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null`
 
 3) Dockerインストール
 
@@ -53,6 +83,26 @@ WSLのUbuntu上で実施。
 
 - `docker version`
 - `docker ps`
+
+### 1.4 推奨 VS Code 拡張（WSL側にも入れる）
+
+必須（推奨）:
+- Python（拡張ID: `ms-python.python`）
+- Pylance（拡張ID: `ms-python.vscode-pylance`）320.
+- Ruff（拡張ID: `charliermarsh.ruff`）
+
+あると便利:
+- Docker（拡張ID: `ms-azuretools.vscode-docker`）
+- YAML（拡張ID: `redhat.vscode-yaml`）
+- EditorConfig（拡張ID: `editorconfig.editorconfig`）
+
+注: このリポジトリには推奨拡張の一覧として `.vscode/extensions.json` を同梱しています。
+VS Code の「Recommended」からまとめてインストールできます。
+
+### 1.5 推奨 VS Code 設定（任意）
+
+注: このリポジトリには、最小限の開発設定として `.vscode/settings.json` を同梱しています。
+好みに合わせて調整してください。
 
 ---
 
@@ -85,6 +135,29 @@ WSLのUbuntu上で実施。
 
 確認:
 - `docker compose ps`
+
+### 3.1.1 オブジェクトストレージ（MinIO）
+
+`docker-compose.yml` には開発用のMinIO（S3互換）を含みます。
+
+- S3 API: `http://127.0.0.1:9000`
+- Console: `http://127.0.0.1:9001`（user/pass は `minioadmin` / `minioadmin`）
+- バケット: `scheduler-logs`（起動時に自動作成、匿名ダウンロードを許可）
+
+ジョブログを実行後にMinIOへ退避して `log_ref` をURL化する場合は、環境変数を有効化します:
+
+- `SCHEDULER_LOG_ARCHIVE_ENABLED=1`
+- `SCHEDULER_LOG_ARCHIVE_S3_ENDPOINT_URL=http://127.0.0.1:9000`
+- `SCHEDULER_LOG_ARCHIVE_PUBLIC_BASE_URL=http://127.0.0.1:9000`
+- `SCHEDULER_LOG_ARCHIVE_BUCKET=scheduler-logs`
+- `SCHEDULER_LOG_ARCHIVE_ACCESS_KEY_ID=minioadmin`
+- `SCHEDULER_LOG_ARCHIVE_SECRET_ACCESS_KEY=minioadmin`
+
+ローカルログの扱い（Worker側）:
+
+- アップロード成功時にローカルログを削除する: `SCHEDULER_LOG_LOCAL_DELETE_AFTER_UPLOAD=1`
+- 指定時間（hours）を超えたローカルログを削除する: `SCHEDULER_LOG_LOCAL_RETENTION_HOURS=168`
+  - `0` の場合は無効（削除しない）
 
 停止:
 - `docker compose down`
@@ -130,7 +203,7 @@ WSLのUbuntu上で実施。
   - `DATABASE_URL=postgres://postgres:postgres@localhost:5432/scheduler`
 - gRPC bind
   - `SCHEDULER_GRPC_HOST=127.0.0.1`
-  - `SCHEDULER_GRPC_PORT=50051`
+  - ポートは `SCHEDULER_GRPC_PORT_RANGE_START/END` から自動選択（複数worker起動を想定）
 - TLSファイル（設計で固定）
   - `SCHEDULER_TLS_CERT_FILE=/etc/scheduler/tls/tls.crt`
   - `SCHEDULER_TLS_KEY_FILE=/etc/scheduler/tls/tls.key`
@@ -145,6 +218,29 @@ WSLのUbuntu上で実施。
 - `SCHEDULER_TLS_KEY_FILE=/mnt/c/vscode/Scheduler/dev-certs/tls.key`
 
 （本番K8sではSecretを `/etc/scheduler/tls` にマウントする前提）
+
+---
+
+## 4.1 設定ヘルプ（fixtures）
+
+運用UIの Settings で表示する「意味/影響/制限（min/max等）」はDBに格納します。
+
+初期セットアップ（新規DB）では fixtures をロードします:
+
+- `python manage.py loaddata scheduler_setting_help`
+
+注: 既に `SchedulerSettingHelp` が作成済みのDBに対して `loaddata` すると、キー重複で失敗する場合があります。
+
+既にDBがあり、空のヘルプ行が存在する場合は、同梱のデフォルトを上書き適用できます:
+
+- `python manage.py scheduler_seed_setting_help --apply-defaults`
+
+## 5. イベント投入（M4）の動作確認
+
+ローカルで `POST /api/events/ingest/` を叩いて、イベント→JobRun生成までを確認するためのスクリプトです。
+
+- curl（WSL想定）: [scripts/ingest_event.sh](../scripts/ingest_event.sh)
+- Python: [scripts/ingest_event.py](../scripts/ingest_event.py)
 
 ---
 

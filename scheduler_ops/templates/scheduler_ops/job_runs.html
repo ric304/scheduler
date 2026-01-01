@@ -1,0 +1,280 @@
+{% extends "scheduler_ops/base.html" %}
+
+{% block title %}Ops - JobRuns{% endblock %}
+
+{% block page_title %}JobRuns{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <div class="card-body">
+      <div class="table-responsive">
+        <table id="jobruns-table" class="table table-striped table-hover align-middle" style="width: 100%;">
+          <thead>
+            <tr>
+              <th>id</th>
+              <th>job</th>
+              <th>schedule</th>
+              <th>state</th>
+              <th>attempt</th>
+              <th>scheduled_for</th>
+              <th>assigned_worker_id</th>
+              <th>started_at</th>
+              <th>finished_at</th>
+              <th>cpu_s</th>
+              <th>cpu_%</th>
+              <th>peak_mem</th>
+              <th>io_r</th>
+              <th>io_w</th>
+              <th>log_ref</th>
+              <th>error_summary</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in runs %}
+              <tr>
+                <td class="font-monospace">{{ r.id }}</td>
+                <td>
+                  <span class="font-monospace">{{ r.job_definition.id }}</span>
+                  <span class="text-body-secondary">/</span>
+                  {{ r.job_definition.name }}
+                </td>
+                <td class="font-monospace" style="max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                  <span title="{{ r.job_definition.schedule|default:''|escape }}">{{ r.job_definition.schedule }}</span>
+                </td>
+                <td class="font-monospace">{{ r.state }}</td>
+                <td class="font-monospace">{{ r.attempt }}</td>
+                <td class="font-monospace">{% if r.scheduled_for %}{{ r.scheduled_for|date:"Y-m-d H:i:s" }}{% endif %}</td>
+                <td class="font-monospace">{{ r.assigned_worker_id }}</td>
+                <td class="font-monospace">{% if r.started_at %}{{ r.started_at|date:"Y-m-d H:i:s" }}{% endif %}</td>
+                <td class="font-monospace">{% if r.finished_at %}{{ r.finished_at|date:"Y-m-d H:i:s" }}{% endif %}</td>
+                <td class="font-monospace">{% if r.resource_cpu_seconds_total != None %}{{ r.resource_cpu_seconds_total|floatformat:3 }}{% else %}—{% endif %}</td>
+                <td class="font-monospace">—</td>
+                <td class="font-monospace">{% if r.resource_peak_rss_bytes != None %}{{ r.resource_peak_rss_bytes }}{% else %}—{% endif %}</td>
+                <td class="font-monospace">{% if r.resource_io_read_bytes != None %}{{ r.resource_io_read_bytes }}{% else %}—{% endif %}</td>
+                <td class="font-monospace">{% if r.resource_io_write_bytes != None %}{{ r.resource_io_write_bytes }}{% else %}—{% endif %}</td>
+                <td class="font-monospace" style="max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                  {% if r.log_ref %}
+                    <button type="button" class="btn btn-sm btn-outline-light ops-view-log" data-run-id="{{ r.id }}">view</button>
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td class="font-monospace" style="max-width: 520px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                  <span title="{{ r.error_summary|default:''|escape }}">{{ r.error_summary }}</span>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div class="text-body-secondary small mt-2">直近500件のみ表示（MVP）。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Log Modal -->
+  <div class="modal fade" id="ops-log-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="ops-log-modal-title">Log</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div id="ops-log-errors" class="alert alert-danger d-none"></div>
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <div class="text-body-secondary small" id="ops-log-meta">—</div>
+            <a id="ops-log-download" class="btn btn-sm btn-outline-light" href="#" target="_blank" rel="noopener">download</a>
+          </div>
+          <pre class="mb-0" style="white-space: pre-wrap;" id="ops-log-text">loading...</pre>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    (function () {
+      const tableEl = document.getElementById('jobruns-table');
+      if (!tableEl) return;
+
+      const dt = new DataTable(tableEl, {
+        stateSave: true,
+        pageLength: 25,
+        order: [[0, 'desc']],
+      });
+
+      (function applyInitialFilter() {
+        try {
+          const params = new URLSearchParams(location.search);
+          const workerId = params.get('worker_id');
+          if (workerId) {
+            dt.search(String(workerId)).draw();
+          }
+        } catch {
+          // ignore
+        }
+      })();
+
+      function fmtTs(iso) {
+        if (!iso) return '';
+        const dt = new Date(iso);
+        if (Number.isNaN(dt.getTime())) return String(iso);
+        return dt.toLocaleString('ja-JP', { hour12: false });
+      }
+
+      function fmtBytes(n) {
+        const v = Number(n);
+        if (!Number.isFinite(v)) return '—';
+        const abs = Math.abs(v);
+        const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+        let u = 0;
+        let x = abs;
+        while (x >= 1024 && u < units.length - 1) { x /= 1024; u += 1; }
+        const sign = v < 0 ? '-' : '';
+        return sign + x.toFixed(x >= 10 ? 0 : 1) + units[u];
+      }
+
+      function durationSeconds(startIso, endIso) {
+        if (!startIso || !endIso) return null;
+        const a = new Date(startIso);
+        const b = new Date(endIso);
+        const ms = b.getTime() - a.getTime();
+        if (!Number.isFinite(ms) || ms <= 0) return null;
+        return ms / 1000;
+      }
+
+      function escapeHtml(s) {
+        return String(s ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }
+
+      function scheduleToText(jobType, schedule) {
+        const s = schedule || {};
+        if (jobType === 'event') return 'event';
+        if (jobType !== 'time') return '';
+
+        if (s.kind === 'every_n_minutes') return `every_n_minutes=${s.n}`;
+        if (s.kind === 'hourly') return `hourly minute=${s.minute}`;
+        if (s.kind === 'daily') return `daily time=${s.time}`;
+        if (s.kind === 'weekdays') return `weekdays time=${s.time}`;
+        if (s.kind === 'weekly') return `weekly weekday=${s.weekday} time=${s.time}`;
+        if (s.every_n_minutes) return `every_n_minutes=${s.every_n_minutes}`;
+        return '';
+      }
+
+      const logModalEl = document.getElementById('ops-log-modal');
+      const logModal = logModalEl ? new bootstrap.Modal(logModalEl) : null;
+      const logTitleEl = document.getElementById('ops-log-modal-title');
+      const logTextEl = document.getElementById('ops-log-text');
+      const logMetaEl = document.getElementById('ops-log-meta');
+      const logErrEl = document.getElementById('ops-log-errors');
+      const logDlEl = document.getElementById('ops-log-download');
+
+      function showLogErrors(errors) {
+        if (!logErrEl) return;
+        if (!errors || errors.length === 0) {
+          logErrEl.classList.add('d-none');
+          logErrEl.textContent = '';
+          return;
+        }
+        logErrEl.classList.remove('d-none');
+        logErrEl.textContent = errors.join('\n');
+      }
+
+      async function openLogModal(runId) {
+        if (!logModal) return;
+        showLogErrors([]);
+        if (logTitleEl) logTitleEl.textContent = `Log (JobRun #${runId})`;
+        if (logTextEl) logTextEl.textContent = 'loading...';
+        if (logMetaEl) logMetaEl.textContent = '—';
+        if (logDlEl) {
+          const dlUrl = ("{% url 'scheduler_ops:api_job_run_log_download' 0 %}".replace('/0/', `/${runId}/`)) + "?_=" + Date.now();
+          logDlEl.href = dlUrl;
+        }
+        logModal.show();
+
+        try {
+          const url = ("{% url 'scheduler_ops:api_job_run_log' 0 %}".replace('/0/', `/${runId}/`)) + "?_=" + Date.now();
+          const data = await $.getJSON(url);
+          if (!data.ok) {
+            showLogErrors(data.errors || ['failed']);
+          }
+          if (logMetaEl) {
+            const src = data.source || '—';
+            const trunc = data.truncated ? 'truncated' : 'full';
+            const ref = data.log_ref || '';
+            logMetaEl.textContent = `source=${src}, ${trunc}, max_bytes=${data.max_bytes ?? ''}${ref ? ', ref=' + ref : ''}`;
+          }
+          if (logTextEl) logTextEl.textContent = data.log_text || '';
+        } catch {
+          showLogErrors(['network error']);
+          if (logTextEl) logTextEl.textContent = '';
+        }
+      }
+
+      window.schedulerOpsRefresh = async function () {
+        const url = "{% url 'scheduler_ops:api_job_runs' %}?_=" + Date.now();
+        const data = await $.getJSON(url);
+
+        const rows = (data.runs || []).map(function (r) {
+          const jobCell = `<span class="font-monospace">${r.job_definition_id ?? ''}</span>`
+            + ' <span class="text-body-secondary">/</span> '
+            + `${r.job_definition_name ?? ''}`;
+          const schedTxt = scheduleToText(r.job_definition_type, r.job_definition_schedule);
+          const err = r.error_summary ?? '';
+          const errEsc = escapeHtml(err);
+          const logRef = r.log_ref ?? '';
+          const logCell = logRef
+            ? `<button type="button" class="btn btn-sm btn-outline-light ops-view-log" data-run-id="${r.id ?? ''}">view</button>`
+            : '—';
+
+          const cpuS = (r.resource_cpu_seconds_total != null) ? Number(r.resource_cpu_seconds_total) : null;
+          const durS = durationSeconds(r.started_at, r.finished_at);
+          const cpuPct = (cpuS != null && durS != null && durS > 0) ? (cpuS / durS) * 100.0 : null;
+
+          return [
+            `<span class="font-monospace">${r.id ?? ''}</span>`,
+            jobCell,
+            `<span class="font-monospace">${escapeHtml(schedTxt)}</span>`,
+            `<span class="font-monospace">${r.state ?? ''}</span>`,
+            `<span class="font-monospace">${r.attempt ?? ''}</span>`,
+            `<span class="font-monospace">${fmtTs(r.scheduled_for)}</span>`,
+            `<span class="font-monospace">${r.assigned_worker_id ?? ''}</span>`,
+            `<span class="font-monospace">${fmtTs(r.started_at)}</span>`,
+            `<span class="font-monospace">${fmtTs(r.finished_at)}</span>`,
+            `<span class="font-monospace">${cpuS == null ? '—' : cpuS.toFixed(3)}</span>`,
+            `<span class="font-monospace">${cpuPct == null ? '—' : cpuPct.toFixed(1)}</span>`,
+            `<span class="font-monospace">${r.resource_peak_rss_bytes == null ? '—' : fmtBytes(r.resource_peak_rss_bytes)}</span>`,
+            `<span class="font-monospace">${r.resource_io_read_bytes == null ? '—' : fmtBytes(r.resource_io_read_bytes)}</span>`,
+            `<span class="font-monospace">${r.resource_io_write_bytes == null ? '—' : fmtBytes(r.resource_io_write_bytes)}</span>`,
+            `<span class="font-monospace">${logCell}</span>`,
+            `<span class="font-monospace" title="${errEsc}">${errEsc}</span>`,
+          ];
+        });
+
+        dt.clear();
+        dt.rows.add(rows);
+        dt.draw(false);
+
+        return { server_time: data.server_time };
+      };
+
+      tableEl.addEventListener('click', function (e) {
+        const btn = e.target && e.target.closest ? e.target.closest('.ops-view-log') : null;
+        if (!btn) return;
+        e.preventDefault();
+        const runId = btn.getAttribute('data-run-id');
+        if (!runId) return;
+        openLogModal(runId);
+      });
+    })();
+  </script>
+{% endblock %}

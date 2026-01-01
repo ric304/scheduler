@@ -1,0 +1,319 @@
+{% extends "scheduler_ops/base.html" %}
+
+{% block title %}Ops - Workers{% endblock %}
+
+{% block page_title %}Workers{% endblock %}
+
+{% block content %}
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <div>
+      <div class="text-body-secondary small">Leader</div>
+      <div class="fw-semibold">
+        {% if leadership.leader_worker_id %}
+          <span id="ops-leader-worker-id">{{ leadership.leader_worker_id }}</span>
+        {% else %}
+          <span id="ops-leader-worker-id">—</span>
+        {% endif %}
+        <span class="text-body-secondary"> / epoch=<span id="ops-leader-epoch">{{ leadership.cluster_epoch }}</span></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-body">
+      <div class="table-responsive">
+        <table id="workers-table" class="table table-striped table-hover align-middle" style="width: 100%;">
+          <thead>
+            <tr>
+              <th class="text-nowrap" style="width: 60px;">ID</th>
+              <th class="text-nowrap">node_id</th>
+              <th class="text-nowrap">role</th>
+              <th class="text-nowrap" style="width: 60px;">weight</th>
+              <th class="text-nowrap">grpc</th>
+              <th class="text-nowrap" style="width: 110px;">load</th>
+              <th style="width: 470px;">running</th>
+              <th class="text-nowrap" style="width: 190px;">last_seen</th>
+              <th class="text-nowrap" style="width: 90px;">heartbeat</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for w in workers %}
+              <tr>
+                <td class="font-monospace" style="max-width: 60px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{{ w.worker_id }}">{{ w.worker_id }}</td>
+                <td class="font-monospace">{{ w.node_id }}</td>
+                <td>
+                  {% if w.is_leader %}
+                    <span class="badge text-bg-primary">LEADER</span>
+                  {% elif w.is_subleader %}
+                    <span class="badge text-bg-info">SUBLEADER</span>
+                  {% else %}
+                    <span class="badge text-bg-secondary">WORKER</span>
+                  {% endif %}
+                </td>
+                <td class="font-monospace">—</td>
+                <td class="font-monospace">
+                  {% if w.grpc_host and w.grpc_port %}
+                    {{ w.grpc_host }}:{{ w.grpc_port }}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td class="font-monospace">—</td>
+                <td>—</td>
+                <td class="font-monospace">—</td>
+                <td class="font-monospace">{{ w.heartbeat_ttl_seconds }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Running Job Modal -->
+  <div class="modal fade" id="ops-running-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="ops-running-modal-title">Running Job</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div id="ops-running-errors" class="alert alert-danger d-none"></div>
+
+          <div class="row g-2">
+            <div class="col-12">
+              <div class="text-body-secondary small">JobRun</div>
+              <div class="font-monospace" id="ops-running-jobrun">—</div>
+            </div>
+            <div class="col-12">
+              <div class="text-body-secondary small">JobDefinition</div>
+              <div class="font-monospace" id="ops-running-jobdef">—</div>
+            </div>
+            <div class="col-6">
+              <div class="text-body-secondary small">state</div>
+              <div class="font-monospace" id="ops-running-state">—</div>
+            </div>
+            <div class="col-6">
+              <div class="text-body-secondary small">attempt</div>
+              <div class="font-monospace" id="ops-running-attempt">—</div>
+            </div>
+            <div class="col-6">
+              <div class="text-body-secondary small">assigned_worker_id</div>
+              <div class="font-monospace" id="ops-running-worker">—</div>
+            </div>
+            <div class="col-6">
+              <div class="text-body-secondary small">leader_epoch</div>
+              <div class="font-monospace" id="ops-running-epoch">—</div>
+            </div>
+            <div class="col-6">
+              <div class="text-body-secondary small">scheduled_for</div>
+              <div class="font-monospace" id="ops-running-scheduled">—</div>
+            </div>
+            <div class="col-6">
+              <div class="text-body-secondary small">started_at</div>
+              <div class="font-monospace" id="ops-running-started">—</div>
+            </div>
+            <div class="col-12">
+              <div class="text-body-secondary small">console_log</div>
+              {% if settings.SCHEDULER_DEPLOYMENT == "k8s" %}
+                <div class="font-monospace" id="ops-running-logref">—</div>
+                <div class="text-body-secondary small">K8S環境のみ参照</div>
+              {% else %}
+                <div class="text-body-secondary">K8S環境のみ参照</div>
+              {% endif %}
+            </div>
+            <div class="col-12">
+              <div class="text-body-secondary small">error_summary</div>
+              <pre class="mb-0" style="white-space: pre-wrap;" id="ops-running-error">—</pre>
+            </div>
+
+            <div class="col-12">
+              <div class="text-body-secondary small">args_json</div>
+              <pre class="mb-0" style="white-space: pre-wrap;" id="ops-running-args">—</pre>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    (function () {
+      const tableEl = document.getElementById('workers-table');
+      if (!tableEl) return;
+
+      const dt = new DataTable(tableEl, {
+        stateSave: true,
+        pageLength: 25,
+        order: [[0, 'asc']],
+      });
+
+      const modalEl = document.getElementById('ops-running-modal');
+      const modal = modalEl ? new bootstrap.Modal(modalEl) : null;
+      const errEl = document.getElementById('ops-running-errors');
+      const titleEl = document.getElementById('ops-running-modal-title');
+      const jobrunEl = document.getElementById('ops-running-jobrun');
+      const jobdefEl = document.getElementById('ops-running-jobdef');
+      const stateEl = document.getElementById('ops-running-state');
+      const attemptEl = document.getElementById('ops-running-attempt');
+      const workerEl = document.getElementById('ops-running-worker');
+      const epochEl = document.getElementById('ops-running-epoch');
+      const scheduledEl = document.getElementById('ops-running-scheduled');
+      const startedEl = document.getElementById('ops-running-started');
+      const logrefEl = document.getElementById('ops-running-logref');
+      const errorEl = document.getElementById('ops-running-error');
+      const argsEl = document.getElementById('ops-running-args');
+
+      function showErrors(errors) {
+        if (!errEl) return;
+        if (!errors || errors.length === 0) {
+          errEl.classList.add('d-none');
+          errEl.textContent = '';
+          return;
+        }
+        errEl.classList.remove('d-none');
+        errEl.textContent = errors.join('\n');
+      }
+
+      function fmtTs(iso) {
+        if (!iso) return '—';
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return String(iso);
+        return d.toLocaleString('ja-JP', { hour12: false });
+      }
+
+      function fmtUnixSeconds(sec) {
+        if (sec === null || sec === undefined) return '—';
+        const n = Number(sec);
+        if (!Number.isFinite(n) || n <= 0) return '—';
+        const d = new Date(n * 1000);
+        if (Number.isNaN(d.getTime())) return '—';
+        return d.toLocaleString('ja-JP', { hour12: false });
+      }
+
+      function escapeHtml(s) {
+        return String(s ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }
+
+      async function openRunDetail(runId) {
+        if (!modal) return;
+        showErrors([]);
+        if (titleEl) titleEl.textContent = `JobRun #${runId}`;
+        modal.show();
+
+        try {
+          const url = ("{% url 'scheduler_ops:api_job_run_detail' 0 %}".replace('/0/', `/${runId}/`)) + "?_=" + Date.now();
+          const data = await $.getJSON(url);
+          if (!data.ok) {
+            showErrors(data.errors || ['failed']);
+            return;
+          }
+          const r = data.run || {};
+          const jd = r.job_definition || {};
+          if (jobrunEl) jobrunEl.textContent = `#${r.id}`;
+          if (jobdefEl) jobdefEl.textContent = jd.name ? `#${jd.id} ${jd.name} (${jd.command_name || ''})` : '—';
+          if (stateEl) stateEl.textContent = r.state || '—';
+          if (attemptEl) attemptEl.textContent = String(r.attempt ?? '—');
+          if (workerEl) workerEl.textContent = r.assigned_worker_id || '—';
+          if (epochEl) epochEl.textContent = String(r.leader_epoch ?? '—');
+          if (scheduledEl) scheduledEl.textContent = fmtTs(r.scheduled_for);
+          if (startedEl) startedEl.textContent = fmtTs(r.started_at);
+          if (logrefEl) {
+            const lr = r.log_ref || '';
+            if (lr && (String(lr).startsWith('http://') || String(lr).startsWith('https://'))) {
+              logrefEl.innerHTML = `<a class="link-light" href="${escapeHtml(lr)}" target="_blank" rel="noopener">${escapeHtml(lr)}</a>`;
+            } else {
+              logrefEl.textContent = lr || '—';
+            }
+          }
+
+          if (errorEl) errorEl.textContent = (r.error_summary || '');
+          if (argsEl) {
+            try {
+              argsEl.textContent = JSON.stringify(jd.default_args_json ?? {}, null, 2);
+            } catch {
+              argsEl.textContent = String(jd.default_args_json ?? '—');
+            }
+          }
+        } catch {
+          showErrors(['network error']);
+        }
+      }
+
+      const leaderIdEl = document.getElementById('ops-leader-worker-id');
+      const leaderEpochEl = document.getElementById('ops-leader-epoch');
+
+      window.schedulerOpsRefresh = async function () {
+        const url = "{% url 'scheduler_ops:api_workers' %}?_=" + Date.now();
+        const data = await $.getJSON(url);
+
+        if (leaderIdEl) leaderIdEl.textContent = data.leadership?.leader_worker_id || '—';
+        if (leaderEpochEl) leaderEpochEl.textContent = String(data.leadership?.cluster_epoch ?? '—');
+
+        const rows = (data.workers || []).map(function (w) {
+          const roleHtml = w.is_leader
+            ? '<span class="badge text-bg-primary">LEADER</span>'
+            : (w.is_subleader
+              ? '<span class="badge text-bg-info">SUBLEADER</span>'
+              : '<span class="badge text-bg-secondary">WORKER</span>');
+
+          const grpcText = (w.grpc_host && w.grpc_port) ? `${w.grpc_host}:${w.grpc_port}` : '—';
+
+          const assignedCount = Number(w.assigned_job_count || 0);
+          const runningCount = Number(w.running_job_count || 0);
+          const roleWeight = Number(w.role_weight || 1);
+          const effectiveLoad = Number(w.effective_load || (assignedCount + runningCount));
+          const normalizedLoad = (w.normalized_load !== null && w.normalized_load !== undefined)
+            ? Number(w.normalized_load)
+            : (roleWeight > 0 ? (effectiveLoad / roleWeight) : effectiveLoad);
+          const loadTitle = `score=${normalizedLoad.toFixed(3)} (effective=${effectiveLoad}, weight=${roleWeight}) A=${assignedCount} R=${runningCount}`;
+          const running = w.running_job_run;
+          const runningHtml = running
+            ? `<a href="#" class="ops-running-job" data-run-id="${running.id}"><span class="badge text-bg-warning">RUNNING</span> <span class="font-monospace">#${running.id}</span> ${running.job_definition_name || ''}</a>`
+            : '—';
+
+          return [
+            `<span class="font-monospace d-inline-block" style="max-width: 60px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${w.worker_id ?? ''}">${w.worker_id ?? ''}</span>`,
+            `<span class="font-monospace">${w.node_id ?? ''}</span>`,
+            roleHtml,
+            `<span class="font-monospace">${roleWeight}</span>`,
+            `<span class="font-monospace">${grpcText}</span>`,
+            `<span class="font-monospace" title="${loadTitle}">${normalizedLoad.toFixed(3)} <span class="text-body-secondary">(A:${assignedCount} R:${runningCount})</span></span>`,
+            runningHtml,
+            `<span class="font-monospace text-nowrap">${fmtUnixSeconds(w.last_seen)}</span>`,
+            `<span class="font-monospace">${w.heartbeat_ttl_seconds ?? ''}</span>`,
+          ];
+        });
+
+        dt.clear();
+        dt.rows.add(rows);
+        dt.draw(false);
+
+        return { server_time: data.server_time };
+      };
+
+      tableEl.addEventListener('click', function (e) {
+        const a = e.target && e.target.closest ? e.target.closest('.ops-running-job') : null;
+        if (!a) return;
+        e.preventDefault();
+        const runId = a.getAttribute('data-run-id');
+        if (!runId) return;
+        openRunDetail(runId);
+      });
+
+      // Initial refresh so first paint is human-readable.
+      window.schedulerOpsRefresh();
+    })();
+  </script>
+{% endblock %}

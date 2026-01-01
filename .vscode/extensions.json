@@ -1,0 +1,11 @@
+{
+  "recommendations": [
+    "ms-vscode-remote.remote-wsl",
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "charliermarsh.ruff",
+    "ms-azuretools.vscode-docker",
+    "redhat.vscode-yaml",
+    "editorconfig.editorconfig"
+  ]
+}

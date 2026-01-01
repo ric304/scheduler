@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="ja" data-bs-theme="dark">
+  {% load scheduler_ops_roles static %}
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}Scheduler Ops{% endblock %}</title>
+
+    <!-- Bootstrap 5 (M0 scaffold) -->
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+      integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+      crossorigin="anonymous"
+    />
+
+    <!-- DataTables (Bootstrap 5) -->
+    <link
+      href="https://cdn.datatables.net/2.1.8/css/dataTables.bootstrap5.min.css"
+      rel="stylesheet"
+    />
+
+    <!-- Bootstrap Icons -->
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
+      rel="stylesheet"
+    />
+
+    <!-- Notyf -->
+    <link
+      href="https://cdn.jsdelivr.net/npm/notyf@3/notyf.min.css"
+      rel="stylesheet"
+    />
+
+    <style>
+      :root {
+        --ops-header-height: 64px;
+        --ops-header-pad-x: 1rem;
+      }
+      .ops-shell { min-height: 100vh; }
+      .ops-sidebar {
+        width: 280px;
+        position: sticky;
+        top: 0;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .ops-sidebar-body {
+        flex: 1 1 auto;
+        overflow-y: auto;
+      }
+      .ops-content { min-width: 0; }
+      .ops-sidebar-header {
+        height: var(--ops-header-height);
+        padding: 0 var(--ops-header-pad-x);
+        display: flex;
+        align-items: center;
+      }
+      .ops-topbar {
+        height: var(--ops-header-height);
+        padding: 0 var(--ops-header-pad-x);
+        display: flex;
+        align-items: center;
+        --bs-navbar-padding-y: 0;
+        --bs-navbar-padding-x: 0;
+      }
+      .ops-topbar .container-fluid {
+        padding: 0;
+        height: 100%;
+        display: flex;
+        align-items: center;
+      }
+      .ops-main { padding: 1rem; }
+      .ops-sidebar-footer {
+        background: var(--bs-body-bg);
+        padding: .5rem 1rem;
+      }
+    </style>
+
+    {% block head_extra %}{% endblock %}
+  </head>
+  <body class="bg-body-tertiary">
+    <div class="d-flex ops-shell">
+      <aside class="border-end bg-body ops-sidebar">
+        <div class="ops-sidebar-header border-bottom">
+          <a class="d-flex align-items-center gap-2 text-decoration-none" href="{% url 'scheduler_ops:index' %}">
+            <img src="{% static 'scheduler_ops/images/logo.png' %}" alt="Scheduler OPS" height="28" />
+            <span class="fs-5 fw-semibold">Scheduler OPS</span>
+          </a>
+        </div>
+
+        <div class="ops-sidebar-body p-3">
+          {% with current=request.resolver_match.url_name %}
+          <ul class="nav nav-pills flex-column mb-auto">
+            <li class="nav-item">
+              <a class="nav-link {% if current == 'index' %}active{% endif %} d-flex align-items-center" href="{% url 'scheduler_ops:index' %}">
+                <i class="bi bi-speedometer2 me-2"></i>
+                <span>Dashboard</span>
+              </a>
+            </li>
+            {% if user|ops_is_admin %}
+              <li>
+                <a class="nav-link {% if current == 'workers' %}active{% endif %} d-flex align-items-center" href="{% url 'scheduler_ops:workers' %}">
+                  <i class="bi bi-hdd-network me-2"></i>
+                  <span>Workers</span>
+                </a>
+              </li>
+              <li>
+                <a class="nav-link {% if current == 'settings' %}active{% endif %} d-flex align-items-center" href="{% url 'scheduler_ops:settings' %}">
+                  <i class="bi bi-gear me-2"></i>
+                  <span>Settings</span>
+                </a>
+              </li>
+            {% endif %}
+            {% if user|ops_is_super %}
+              <li>
+                <a class="nav-link {% if current == 'users' %}active{% endif %} d-flex align-items-center" href="{% url 'scheduler_ops:users' %}">
+                  <i class="bi bi-people me-2"></i>
+                  <span>Users</span>
+                </a>
+              </li>
+            {% endif %}
+            {% if user|ops_is_app %}
+              <li>
+                <a class="nav-link {% if current == 'jobs' %}active{% endif %} d-flex align-items-center" href="{% url 'scheduler_ops:jobs' %}">
+                  <i class="bi bi-list-task me-2"></i>
+                  <span>Jobs</span>
+                </a>
+              </li>
+              <li>
+                <a class="nav-link {% if current == 'job_runs' %}active{% endif %} d-flex align-items-center" href="{% url 'scheduler_ops:job_runs' %}">
+                  <i class="bi bi-clock-history me-2"></i>
+                  <span>JobRuns</span>
+                </a>
+              </li>
+            {% endif %}
+          </ul>
+          {% endwith %}
+          <hr />
+          <div class="d-flex align-items-center gap-2">
+            {% if user.is_authenticated %}
+              <div class="text-body-secondary small">{{ user.username }}</div>
+              <a class="btn btn-outline-secondary btn-sm ms-auto" href="{% url 'logout' %}">ログアウト</a>
+            {% else %}
+              <a class="btn btn-outline-secondary btn-sm" href="{% url 'login' %}">ログイン</a>
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="ops-sidebar-footer border-top">
+          <div class="text-body-secondary small">Version: <span class="font-monospace">{{ ops_version }}</span></div>
+        </div>
+      </aside>
+
+      <div class="flex-grow-1 ops-content">
+        <header class="navbar border-bottom bg-body sticky-top ops-topbar">
+          <div class="container-fluid">
+            <span class="navbar-text">
+              {% block page_title %}{% endblock %}
+            </span>
+
+            <div class="d-flex align-items-center gap-2">
+              <div class="text-body-secondary small">
+                Last updated: <span id="ops-last-updated">—</span>
+              </div>
+              <div id="ops-refresh-error" class="text-warning small" style="display:none;"></div>
+              <label for="ops-autorefresh-interval" class="form-label mb-0 text-body-secondary small">Auto refresh</label>
+              <select id="ops-autorefresh-interval" class="form-select form-select-sm" style="width: 110px;">
+                <option value="1">1s</option>
+                <option value="2">2s</option>
+                <option value="5">5s</option>
+                <option value="10">10s</option>
+                <option value="30">30s</option>
+              </select>
+              <button id="ops-autorefresh-toggle" type="button" class="btn btn-outline-secondary btn-sm">OFF</button>
+            </div>
+          </div>
+        </header>
+
+        <main class="container-fluid ops-main">
+          {% block content %}{% endblock %}
+        </main>
+      </div>
+    </div>
+
+    <script
+      src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+      integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
+      crossorigin="anonymous"
+    ></script>
+
+    <!-- jQuery (for DataTables) -->
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.datatables.net/2.1.8/js/dataTables.min.js"></script>
+    <script src="https://cdn.datatables.net/2.1.8/js/dataTables.bootstrap5.min.js"></script>
+
+    <!-- Notyf -->
+    <script src="https://cdn.jsdelivr.net/npm/notyf@3/notyf.min.js"></script>
+
+    <script>
+      (function () {
+        const intervalSelect = document.getElementById('ops-autorefresh-interval');
+        const toggleBtn = document.getElementById('ops-autorefresh-toggle');
+        const lastUpdatedEl = document.getElementById('ops-last-updated');
+        const refreshErrorEl = document.getElementById('ops-refresh-error');
+        if (!intervalSelect || !toggleBtn) return;
+
+        const storageKey = `scheduler_ops_autorefresh:${location.pathname}`;
+        const defaults = { enabled: false, intervalSeconds: 5 };
+
+        // Prefer fetch for JSON so dashboards don't depend on jQuery/CDN.
+        window.schedulerOpsGetJSON = async function (url) {
+          const res = await fetch(url, { credentials: 'same-origin' });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return await res.json();
+        };
+
+        function loadState() {
+          try {
+            const raw = localStorage.getItem(storageKey);
+            if (!raw) return defaults;
+            const parsed = JSON.parse(raw);
+            return {
+              enabled: !!parsed.enabled,
+              intervalSeconds: Number(parsed.intervalSeconds) || defaults.intervalSeconds,
+            };
+          } catch {
+            return defaults;
+          }
+        }
+
+        function saveState(state) {
+          localStorage.setItem(storageKey, JSON.stringify(state));
+        }
+
+        function setLastUpdated(isoStringOrNull) {
+          if (!lastUpdatedEl) return;
+          if (!isoStringOrNull) {
+            lastUpdatedEl.textContent = '—';
+            return;
+          }
+          const dt = new Date(isoStringOrNull);
+          if (Number.isNaN(dt.getTime())) {
+            lastUpdatedEl.textContent = String(isoStringOrNull);
+            return;
+          }
+          lastUpdatedEl.textContent = dt.toLocaleString('ja-JP', { hour12: false });
+        }
+
+        // Page-specific hook. Each page can define window.schedulerOpsRefresh = async () => ({ server_time }).
+        async function triggerRefresh() {
+          const fn = window.schedulerOpsRefresh;
+          if (typeof fn !== 'function') return;
+          if (triggerRefresh._inFlight) return;
+          triggerRefresh._inFlight = true;
+          try {
+            const result = await fn();
+            if (result && result.server_time) setLastUpdated(result.server_time);
+            else setLastUpdated(new Date().toISOString());
+            if (refreshErrorEl) {
+              refreshErrorEl.textContent = '';
+              refreshErrorEl.style.display = 'none';
+            }
+          } catch (err) {
+            console.error('Ops auto refresh failed', err);
+            if (refreshErrorEl) {
+              refreshErrorEl.textContent = 'Refresh error: ' + String(err && err.message ? err.message : err);
+              refreshErrorEl.style.display = '';
+            }
+          } finally {
+            triggerRefresh._inFlight = false;
+          }
+        }
+        triggerRefresh._inFlight = false;
+
+        let timerId = null;
+        let state = loadState();
+
+        function render() {
+          intervalSelect.value = String(state.intervalSeconds);
+          toggleBtn.textContent = state.enabled ? 'ON' : 'OFF';
+          toggleBtn.classList.toggle('btn-outline-secondary', !state.enabled);
+          toggleBtn.classList.toggle('btn-outline-primary', state.enabled);
+        }
+
+        function stopTimer() {
+          if (timerId !== null) {
+            clearInterval(timerId);
+            timerId = null;
+          }
+        }
+
+        function startTimer() {
+          stopTimer();
+          const ms = Math.max(1000, state.intervalSeconds * 1000);
+          timerId = setInterval(function () {
+            triggerRefresh();
+          }, ms);
+        }
+
+        intervalSelect.addEventListener('change', function () {
+          state.intervalSeconds = Number(intervalSelect.value) || defaults.intervalSeconds;
+          saveState(state);
+          if (state.enabled) startTimer();
+          render();
+        });
+
+        toggleBtn.addEventListener('click', function () {
+          state.enabled = !state.enabled;
+          saveState(state);
+          if (state.enabled) {
+            triggerRefresh();
+            startTimer();
+          }
+          else stopTimer();
+          render();
+        });
+
+        render();
+
+        // Wait until page scripts are loaded (so window.schedulerOpsRefresh exists).
+        window.addEventListener('load', function () {
+          triggerRefresh();
+          if (state.enabled) startTimer();
+        });
+      })();
+    </script>
+
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

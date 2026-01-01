@@ -1,0 +1,21 @@
+Django>=5.1,<5.3
+python-dotenv>=1.0,<2.0
+redis>=5.0,<6.0
+psycopg[binary]>=3.2,<4.0
+dj-database-url>=2.1,<3.0
+
+# S3互換オブジェクトストレージ（MinIO等）へのログ退避
+boto3>=1.34,<2.0
+
+# gRPC (M2以降で本格利用; M0では依存だけ用意)
+grpcio>=1.60,<2.0
+grpcio-tools>=1.60,<2.0
+
+# 開発補助（任意）
+ruff>=0.8,<1.0
+
+# Metrics (Prometheus)
+prometheus-client>=0.20,<1.0
+
+# Job resource metrics (CPU/memory/IO)
+psutil>=7.2,<8.0

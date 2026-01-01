@@ -1,0 +1,593 @@
+{% extends "scheduler_ops/base.html" %}
+
+{% block title %}Ops - Jobs{% endblock %}
+
+{% block page_title %}Jobs{% endblock %}
+
+{% block content %}
+  <form class="d-none">{% csrf_token %}</form>
+  {{ jobs_payload|json_script:"ops-jobs-bootstrap" }}
+
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <div class="text-body-secondary small">JobDefinitionの作成/編集（M6: MVP）。</div>
+    <button id="ops-jobs-create" type="button" class="btn btn-outline-primary btn-sm">Create Job</button>
+  </div>
+
+  <div class="card">
+    <div class="card-body">
+      <div class="table-responsive">
+        <table id="jobs-table" class="table table-striped table-hover align-middle" style="width: 100%;">
+          <thead>
+            <tr>
+              <th>id</th>
+              <th>name</th>
+              <th>enabled</th>
+              <th>type</th>
+              <th>command</th>
+              <th>schedule</th>
+              <th>timeout</th>
+              <th>retries</th>
+              <th>updated</th>
+              <th>actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for j in job_defs %}
+              <tr>
+                <td class="font-monospace">{{ j.id }}</td>
+                <td>{{ j.name }}</td>
+                <td>
+                  {% if j.enabled %}
+                    <span class="badge text-bg-success">ON</span>
+                  {% else %}
+                    <span class="badge text-bg-secondary">OFF</span>
+                  {% endif %}
+                </td>
+                <td class="font-monospace">{{ j.type }}</td>
+                <td class="font-monospace">{{ j.command_name }}</td>
+                <td class="font-monospace">{{ j.schedule }}</td>
+                <td class="font-monospace">{{ j.timeout_seconds }}</td>
+                <td class="font-monospace">{{ j.max_retries }}</td>
+                <td class="font-monospace">{{ j.updated_at|date:"Y-m-d H:i:s" }}</td>
+                <td>
+                  <div class="btn-group btn-group-sm" role="group">
+                    <button type="button" class="btn btn-outline-secondary ops-job-edit" data-job-id="{{ j.id }}">Edit</button>
+                    <button type="button" class="btn btn-outline-light ops-job-dup" data-job-id="{{ j.id }}">Duplicate</button>
+                    <button type="button" class="btn btn-outline-danger ops-job-del" data-job-id="{{ j.id }}">Delete</button>
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create/Edit Modal -->
+  <div class="modal fade" id="ops-job-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="ops-job-modal-title">Job</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div id="ops-job-errors" class="alert alert-danger d-none"></div>
+          <input type="hidden" id="ops-job-id" />
+
+          <div class="row g-3">
+            <div class="col-12">
+              <label class="form-label">name</label>
+              <input id="ops-job-name" class="form-control" placeholder="例: Sample job" />
+            </div>
+
+            <div class="col-6">
+              <label class="form-label">type</label>
+              <select id="ops-job-type" class="form-select">
+                <option value="time">time</option>
+                <option value="event">event</option>
+              </select>
+            </div>
+
+            <div class="col-6">
+              <label class="form-label">enabled</label>
+              <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" id="ops-job-enabled" />
+                <label class="form-check-label" for="ops-job-enabled">ON</label>
+              </div>
+            </div>
+
+            <div class="col-12">
+              <label class="form-label">command_name</label>
+              <input id="ops-job-command" class="form-control" placeholder="例: scheduler_sample_long_job" />
+              <div class="form-text">管理コマンド名のみ（引数は入れない）。引数は default_args_json で渡す（例: {"sleep_seconds": 90}）。</div>
+            </div>
+
+            <div class="col-6" id="ops-job-schedule-wrap">
+              <label class="form-label">schedule</label>
+              <select id="ops-job-schedule-kind" class="form-select">
+                <option value="every_n_minutes">every_n_minutes</option>
+                <option value="hourly">hourly</option>
+                <option value="daily">daily</option>
+                <option value="weekdays">weekdays</option>
+                <option value="weekly">weekly</option>
+              </select>
+              <div class="form-text">timeジョブは安全な形式（kind+params）に限定。</div>
+            </div>
+
+            <div class="col-6" id="ops-job-every-n-minutes-wrap">
+              <label class="form-label">n（minutes）</label>
+              <input id="ops-job-every-n-minutes" class="form-control" type="number" min="1" step="1" value="5" />
+            </div>
+
+            <div class="col-6 d-none" id="ops-job-hourly-minute-wrap">
+              <label class="form-label">minute（0-59）</label>
+              <input id="ops-job-hourly-minute" class="form-control" type="number" min="0" max="59" step="1" value="0" />
+            </div>
+
+            <div class="col-6 d-none" id="ops-job-time-wrap">
+              <label class="form-label">time（HH:MM）</label>
+              <input id="ops-job-time" class="form-control" type="time" value="09:00" />
+            </div>
+
+            <div class="col-6 d-none" id="ops-job-weekly-wrap">
+              <label class="form-label">weekday</label>
+              <select id="ops-job-weekday" class="form-select">
+                <option value="0">Mon</option>
+                <option value="1">Tue</option>
+                <option value="2">Wed</option>
+                <option value="3">Thu</option>
+                <option value="4">Fri</option>
+                <option value="5">Sat</option>
+                <option value="6">Sun</option>
+              </select>
+            </div>
+
+            <div class="col-6">
+              <label class="form-label">timeout_seconds</label>
+              <input id="ops-job-timeout" class="form-control" type="number" min="0" step="1" value="0" />
+            </div>
+
+            <div class="col-6">
+              <label class="form-label">max_retries</label>
+              <input id="ops-job-retries" class="form-control" type="number" min="0" step="1" value="0" />
+            </div>
+
+            <div class="col-12">
+              <label class="form-label">default_args_json</label>
+              <textarea id="ops-job-args" class="form-control" rows="4" placeholder='{"foo":"bar"}'></textarea>
+              <div class="form-text">JSON object。空なら {}。</div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+          <button id="ops-job-save" type="button" class="btn btn-primary">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete Confirm Modal -->
+  <div class="modal fade" id="ops-job-delete-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Delete Job</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="alert alert-danger py-2 px-3 small mb-2">
+            このジョブを削除します。関連する JobRuns も削除されます（CASCADE）。
+          </div>
+          <div class="small text-body-secondary">対象:</div>
+          <div class="fw-semibold" id="ops-job-delete-name">—</div>
+          <input type="hidden" id="ops-job-delete-id" />
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button id="ops-job-delete-confirm" type="button" class="btn btn-danger">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    (function () {
+      const tableEl = document.getElementById('jobs-table');
+      if (!tableEl) return;
+
+      const dt = new DataTable(tableEl, {
+        stateSave: true,
+        pageLength: 25,
+        order: [[0, 'asc']],
+      });
+
+      const notyf = new Notyf({ duration: 2000 });
+
+      function getCookie(name) {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) return parts.pop().split(';').shift();
+        return '';
+      }
+
+      function fmtTs(iso) {
+        if (!iso) return '';
+        const dt = new Date(iso);
+        if (Number.isNaN(dt.getTime())) return String(iso);
+        return dt.toLocaleString('ja-JP', { hour12: false });
+      }
+
+      function scheduleToText(job) {
+        const s = job.schedule || {};
+        if (job.type === 'event') return 'event';
+        if (job.type !== 'time') return '';
+
+        if (s.kind === 'every_n_minutes') return `every_n_minutes=${s.n}`;
+        if (s.kind === 'hourly') return `hourly minute=${s.minute}`;
+        if (s.kind === 'daily') return `daily time=${s.time}`;
+        if (s.kind === 'weekdays') return `weekdays time=${s.time}`;
+        if (s.kind === 'weekly') return `weekly weekday=${s.weekday} time=${s.time}`;
+        if (s.every_n_minutes) return `every_n_minutes=${s.every_n_minutes}`;
+        return '';
+      }
+
+      // Keep latest jobs payload for edit.
+      const jobsById = new Map();
+
+      function renderTable(jobs) {
+        jobsById.clear();
+        (jobs || []).forEach((j) => jobsById.set(Number(j.id), j));
+
+        const rows = (jobs || []).map(function (j) {
+          const enabledHtml = j.enabled
+            ? '<span class="badge text-bg-success">ON</span>'
+            : '<span class="badge text-bg-secondary">OFF</span>';
+          const editBtn = `<button type="button" class="btn btn-outline-secondary ops-job-edit" data-job-id="${j.id}">Edit</button>`;
+          const dupBtn = `<button type="button" class="btn btn-outline-light ops-job-dup" data-job-id="${j.id}">Duplicate</button>`;
+          const delBtn = `<button type="button" class="btn btn-outline-danger ops-job-del" data-job-id="${j.id}">Delete</button>`;
+          return [
+            `<span class="font-monospace">${j.id ?? ''}</span>`,
+            `${j.name ?? ''}`,
+            enabledHtml,
+            `<span class="font-monospace">${j.type ?? ''}</span>`,
+            `<span class="font-monospace">${j.command_name ?? ''}</span>`,
+            `<span class="font-monospace">${scheduleToText(j)}</span>`,
+            `<span class="font-monospace">${j.timeout_seconds ?? ''}</span>`,
+            `<span class="font-monospace">${j.max_retries ?? ''}</span>`,
+            `<span class="font-monospace">${fmtTs(j.updated_at)}</span>`,
+            `<div class="btn-group btn-group-sm" role="group">${editBtn}${dupBtn}${delBtn}</div>`,
+          ];
+        });
+
+        dt.clear();
+        dt.rows.add(rows);
+        dt.draw(false);
+      }
+
+      const modalEl = document.getElementById('ops-job-modal');
+      const modal = modalEl ? new bootstrap.Modal(modalEl) : null;
+      const titleEl = document.getElementById('ops-job-modal-title');
+      const errEl = document.getElementById('ops-job-errors');
+
+      const deleteModalEl = document.getElementById('ops-job-delete-modal');
+      const deleteModal = deleteModalEl ? new bootstrap.Modal(deleteModalEl) : null;
+      const deleteIdEl = document.getElementById('ops-job-delete-id');
+      const deleteNameEl = document.getElementById('ops-job-delete-name');
+      const deleteConfirmBtn = document.getElementById('ops-job-delete-confirm');
+
+      const idEl = document.getElementById('ops-job-id');
+      const nameEl = document.getElementById('ops-job-name');
+      const typeEl = document.getElementById('ops-job-type');
+      const enabledEl = document.getElementById('ops-job-enabled');
+      const commandEl = document.getElementById('ops-job-command');
+      const scheduleWrapEl = document.getElementById('ops-job-schedule-wrap');
+      const scheduleKindEl = document.getElementById('ops-job-schedule-kind');
+      const everyWrapEl = document.getElementById('ops-job-every-n-minutes-wrap');
+      const everyEl = document.getElementById('ops-job-every-n-minutes');
+      const hourlyMinuteWrapEl = document.getElementById('ops-job-hourly-minute-wrap');
+      const hourlyMinuteEl = document.getElementById('ops-job-hourly-minute');
+      const timeWrapEl = document.getElementById('ops-job-time-wrap');
+      const timeEl = document.getElementById('ops-job-time');
+      const weeklyWrapEl = document.getElementById('ops-job-weekly-wrap');
+      const weekdayEl = document.getElementById('ops-job-weekday');
+      const timeoutEl = document.getElementById('ops-job-timeout');
+      const retriesEl = document.getElementById('ops-job-retries');
+      const argsEl = document.getElementById('ops-job-args');
+      const saveBtn = document.getElementById('ops-job-save');
+      const createBtn = document.getElementById('ops-jobs-create');
+
+      function showErrors(errors) {
+        if (!errEl) return;
+        if (!errors || errors.length === 0) {
+          errEl.classList.add('d-none');
+          errEl.textContent = '';
+          return;
+        }
+        errEl.classList.remove('d-none');
+        errEl.textContent = errors.join('\n');
+      }
+
+      function syncTypeVisibility() {
+        if (!typeEl) return;
+        const isTime = typeEl.value === 'time';
+
+        if (scheduleWrapEl) scheduleWrapEl.classList.toggle('d-none', !isTime);
+        if (everyWrapEl) everyWrapEl.classList.toggle('d-none', !isTime);
+        if (hourlyMinuteWrapEl) hourlyMinuteWrapEl.classList.add('d-none');
+        if (timeWrapEl) timeWrapEl.classList.add('d-none');
+        if (weeklyWrapEl) weeklyWrapEl.classList.add('d-none');
+
+        if (!isTime) return;
+        const kind = (scheduleKindEl && scheduleKindEl.value) ? scheduleKindEl.value : 'every_n_minutes';
+        if (kind === 'every_n_minutes') {
+          if (everyWrapEl) everyWrapEl.classList.remove('d-none');
+        } else if (kind === 'hourly') {
+          if (everyWrapEl) everyWrapEl.classList.add('d-none');
+          if (hourlyMinuteWrapEl) hourlyMinuteWrapEl.classList.remove('d-none');
+        } else if (kind === 'daily' || kind === 'weekdays') {
+          if (everyWrapEl) everyWrapEl.classList.add('d-none');
+          if (timeWrapEl) timeWrapEl.classList.remove('d-none');
+        } else if (kind === 'weekly') {
+          if (everyWrapEl) everyWrapEl.classList.add('d-none');
+          if (timeWrapEl) timeWrapEl.classList.remove('d-none');
+          if (weeklyWrapEl) weeklyWrapEl.classList.remove('d-none');
+        }
+      }
+
+      function openCreate() {
+        if (!modal) return;
+        if (titleEl) titleEl.textContent = 'Create Job';
+        showErrors([]);
+        idEl.value = '';
+        nameEl.value = '';
+        typeEl.value = 'time';
+        enabledEl.checked = true;
+        commandEl.value = '';
+        if (scheduleKindEl) scheduleKindEl.value = 'every_n_minutes';
+        everyEl.value = '5';
+        if (hourlyMinuteEl) hourlyMinuteEl.value = '0';
+        if (timeEl) timeEl.value = '09:00';
+        if (weekdayEl) weekdayEl.value = '0';
+        timeoutEl.value = '0';
+        retriesEl.value = '0';
+        argsEl.value = '{}';
+        syncTypeVisibility();
+        modal.show();
+      }
+
+      function openEdit(jobId) {
+        if (!modal) return;
+        const job = jobsById.get(Number(jobId));
+        if (!job) {
+          notyf.error('Job not found');
+          return;
+        }
+        if (titleEl) titleEl.textContent = `Edit Job #${job.id}`;
+        showErrors([]);
+        idEl.value = String(job.id);
+        nameEl.value = job.name || '';
+        typeEl.value = job.type || 'time';
+        enabledEl.checked = !!job.enabled;
+        commandEl.value = job.command_name || '';
+        const sch = job.schedule || {};
+        if (typeEl.value === 'time') {
+          if (sch.kind) {
+            if (scheduleKindEl) scheduleKindEl.value = String(sch.kind);
+            if (sch.kind === 'every_n_minutes') everyEl.value = String(sch.n ?? 5);
+            if (sch.kind === 'hourly' && hourlyMinuteEl) hourlyMinuteEl.value = String(sch.minute ?? 0);
+            if ((sch.kind === 'daily' || sch.kind === 'weekdays' || sch.kind === 'weekly') && timeEl) timeEl.value = String(sch.time ?? '09:00');
+            if (sch.kind === 'weekly' && weekdayEl) weekdayEl.value = String(sch.weekday ?? 0);
+          } else {
+            if (scheduleKindEl) scheduleKindEl.value = 'every_n_minutes';
+            everyEl.value = String(sch.every_n_minutes || 5);
+          }
+        }
+        timeoutEl.value = String(job.timeout_seconds || 0);
+        retriesEl.value = String(job.max_retries || 0);
+        argsEl.value = JSON.stringify(job.default_args_json || {}, null, 2);
+        syncTypeVisibility();
+        modal.show();
+      }
+
+      if (scheduleKindEl) scheduleKindEl.addEventListener('change', syncTypeVisibility);
+
+      async function saveJob() {
+        showErrors([]);
+        const jobId = (idEl.value || '').trim();
+
+        let argsObj = {};
+        const rawArgs = (argsEl.value || '').trim();
+        if (rawArgs) {
+          try {
+            argsObj = JSON.parse(rawArgs);
+          } catch {
+            showErrors(['default_args_json must be valid JSON']);
+            return;
+          }
+        }
+
+        const payload = {
+          name: (nameEl.value || '').trim(),
+          enabled: !!enabledEl.checked,
+          type: (typeEl.value || '').trim(),
+          command_name: (commandEl.value || '').trim(),
+          timeout_seconds: Number(timeoutEl.value || 0),
+          max_retries: Number(retriesEl.value || 0),
+          default_args_json: argsObj,
+        };
+
+        if (payload.type === 'time') {
+          const kind = (scheduleKindEl && scheduleKindEl.value) ? scheduleKindEl.value : 'every_n_minutes';
+          if (kind === 'every_n_minutes') {
+            payload.schedule = { kind: 'every_n_minutes', n: Number(everyEl.value || 0) };
+          } else if (kind === 'hourly') {
+            payload.schedule = { kind: 'hourly', minute: Number((hourlyMinuteEl && hourlyMinuteEl.value) || 0) };
+          } else if (kind === 'daily') {
+            payload.schedule = { kind: 'daily', time: String((timeEl && timeEl.value) || '') };
+          } else if (kind === 'weekdays') {
+            payload.schedule = { kind: 'weekdays', time: String((timeEl && timeEl.value) || '') };
+          } else if (kind === 'weekly') {
+            payload.schedule = {
+              kind: 'weekly',
+              weekday: Number((weekdayEl && weekdayEl.value) || 0),
+              time: String((timeEl && timeEl.value) || ''),
+            };
+          } else {
+            payload.schedule = { kind: 'every_n_minutes', n: Number(everyEl.value || 0) };
+          }
+        }
+
+        const url = jobId
+          ? ("{% url 'scheduler_ops:api_jobs_update' 0 %}".replace('/0/update/', `/${jobId}/update/`))
+          : "{% url 'scheduler_ops:api_jobs_create' %}";
+
+        try {
+          const resp = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRFToken': getCookie('csrftoken'),
+            },
+            body: JSON.stringify(payload),
+          });
+          const data = await resp.json();
+          if (!resp.ok || !data.ok) {
+            showErrors((data && data.errors) ? data.errors : ['save failed']);
+            return;
+          }
+
+          notyf.success('Saved');
+          if (modal) modal.hide();
+          if (typeof window.schedulerOpsRefresh === 'function') {
+            await window.schedulerOpsRefresh();
+          }
+        } catch {
+          showErrors(['network error']);
+        }
+      }
+
+      window.schedulerOpsRefresh = async function () {
+        const url = "{% url 'scheduler_ops:api_jobs' %}?_=" + Date.now();
+        const data = await (window.schedulerOpsGetJSON ? window.schedulerOpsGetJSON(url) : $.getJSON(url));
+
+        renderTable(data.jobs || []);
+
+        return { server_time: data.server_time };
+      };
+
+      async function duplicateJob(jobId) {
+        const url = ("{% url 'scheduler_ops:api_jobs_duplicate' 0 %}".replace('/0/duplicate/', `/${jobId}/duplicate/`));
+        try {
+          const resp = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRFToken': getCookie('csrftoken'),
+            },
+            body: JSON.stringify({}),
+          });
+          const data = await resp.json();
+          if (!resp.ok || !data.ok) {
+            notyf.error(((data && data.errors) ? data.errors.join('\n') : 'duplicate failed'));
+            return;
+          }
+          notyf.success('Duplicated (disabled)');
+          if (typeof window.schedulerOpsRefresh === 'function') {
+            await window.schedulerOpsRefresh();
+          }
+        } catch {
+          notyf.error('network error');
+        }
+      }
+
+      function openDelete(jobId) {
+        const j = jobsById.get(Number(jobId));
+        if (!j) return;
+        if (deleteIdEl) deleteIdEl.value = String(j.id);
+        if (deleteNameEl) deleteNameEl.textContent = `${j.name ?? ''} (#${j.id})`;
+        deleteModal && deleteModal.show();
+      }
+
+      async function deleteJob(jobId) {
+        const url = ("{% url 'scheduler_ops:api_jobs_delete' 0 %}".replace('/0/delete/', `/${jobId}/delete/`));
+        try {
+          const resp = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRFToken': getCookie('csrftoken'),
+            },
+            body: JSON.stringify({}),
+          });
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok || !data || !data.ok) {
+            const msg = (data && data.errors) ? data.errors.join('\n') : 'delete failed';
+            notyf.error(msg);
+            return;
+          }
+          const n = data.deleted && typeof data.deleted.deleted_job_runs === 'number' ? data.deleted.deleted_job_runs : null;
+          notyf.success(n === null ? 'Deleted' : `Deleted (JobRuns: ${n})`);
+          deleteModal && deleteModal.hide();
+          if (typeof window.schedulerOpsRefresh === 'function') {
+            await window.schedulerOpsRefresh();
+          }
+        } catch {
+          notyf.error('network error');
+        }
+      }
+
+      // Bootstrap from server-rendered payload so Edit works immediately.
+      try {
+        const el = document.getElementById('ops-jobs-bootstrap');
+        if (el && el.textContent) {
+          const bootstrapJobs = JSON.parse(el.textContent);
+          renderTable(bootstrapJobs || []);
+        }
+      } catch {
+        // ignore
+      }
+
+      if (typeEl) typeEl.addEventListener('change', syncTypeVisibility);
+      if (createBtn) createBtn.addEventListener('click', openCreate);
+      if (saveBtn) saveBtn.addEventListener('click', saveJob);
+
+      tableEl.addEventListener('click', function (e) {
+        const editBtn = e.target && e.target.closest ? e.target.closest('.ops-job-edit') : null;
+        if (editBtn) {
+          const jobId = editBtn.getAttribute('data-job-id');
+          if (!jobId) return;
+          openEdit(jobId);
+          return;
+        }
+
+        const dupBtn = e.target && e.target.closest ? e.target.closest('.ops-job-dup') : null;
+        if (dupBtn) {
+          const jobId = dupBtn.getAttribute('data-job-id');
+          if (!jobId) return;
+          duplicateJob(jobId);
+          return;
+        }
+
+        const delBtn = e.target && e.target.closest ? e.target.closest('.ops-job-del') : null;
+        if (delBtn) {
+          const jobId = delBtn.getAttribute('data-job-id');
+          if (!jobId) return;
+          openDelete(jobId);
+        }
+      });
+
+      if (deleteConfirmBtn) {
+        deleteConfirmBtn.addEventListener('click', function () {
+          const jobId = deleteIdEl ? String(deleteIdEl.value || '') : '';
+          if (!jobId) return;
+          deleteJob(jobId);
+        });
+      }
+    })();
+  </script>
+{% endblock %}

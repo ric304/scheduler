@@ -1,0 +1,462 @@
+{% extends 'scheduler_ops/base.html' %}
+
+{% block title %}Settings | Scheduler Ops{% endblock %}
+
+{% block page_title %}Settings{% endblock %}
+
+{% block content %}
+  <div class="d-flex align-items-center gap-2 mb-3">
+    <button id="btn-apply" class="btn btn-primary btn-sm" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Leader→Workers reload">Apply</button>
+    <div class="text-body-secondary small" id="latest-reload">—</div>
+  </div>
+
+  <div class="card">
+    <div class="card-body">
+      <table id="settings-table" class="table table-striped table-hover table-sm" style="width: 100%">
+        <thead>
+          <tr>
+            <th>Key</th>
+            <th>Value</th>
+            <th>DB updated</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="modal fade" id="modal-edit" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Setting edit</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-2">
+            <label class="form-label">Key</label>
+            <input id="edit-key" type="text" class="form-control form-control-sm" readonly />
+          </div>
+          <div class="mb-2">
+            <div class="small fw-semibold">意味</div>
+            <div class="small text-body-secondary" id="edit-help-desc">—</div>
+          </div>
+          <div class="mb-2">
+            <div class="small fw-semibold">影響</div>
+            <div class="small text-body-secondary" id="edit-help-impact">—</div>
+          </div>
+          <div class="mb-2 d-none" id="edit-enum-wrap">
+            <label class="form-label">Value</label>
+            <select id="edit-enum" class="form-select form-select-sm"></select>
+          </div>
+          <div class="mb-2 d-none" id="edit-bool-wrap">
+            <div class="form-check">
+              <input id="edit-bool" class="form-check-input" type="checkbox" />
+              <label class="form-check-label" for="edit-bool">Enabled</label>
+            </div>
+          </div>
+          <div class="mb-2" id="edit-text-wrap">
+            <label class="form-label">Value (JSON or raw string)</label>
+            <textarea id="edit-value" class="form-control form-control-sm" rows="6" placeholder="例: 123 / true / \"abc\" / {\"a\":1}"></textarea>
+            <div class="form-text">文字列はJSONとして解釈できない場合、raw文字列として保存します。</div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">閉じる</button>
+          <button id="btn-help-edit" type="button" class="btn btn-outline-secondary btn-sm d-none">ヘルプ編集</button>
+          <button id="btn-help-save" type="button" class="btn btn-outline-primary btn-sm d-none">ヘルプ保存</button>
+          <button id="btn-save" type="button" class="btn btn-primary btn-sm">保存（DB override）</button>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+
+(function () {
+  const notyf = new Notyf({ duration: 2500 });
+
+  function getCookie(name) {
+    const value = `; ${document.cookie}`;
+    const parts = value.split(`; ${name}=`);
+    if (parts.length === 2) return parts.pop().split(';').shift();
+    return '';
+  }
+
+  const tableEl = document.getElementById('settings-table');
+  const latestReloadEl = document.getElementById('latest-reload');
+  const btnApply = document.getElementById('btn-apply');
+
+  const modalEl = document.getElementById('modal-edit');
+  const modal = modalEl ? new bootstrap.Modal(modalEl) : null;
+  const editKeyEl = document.getElementById('edit-key');
+  const editValueEl = document.getElementById('edit-value');
+  const editEnumWrapEl = document.getElementById('edit-enum-wrap');
+  const editEnumEl = document.getElementById('edit-enum');
+  const editBoolWrapEl = document.getElementById('edit-bool-wrap');
+  const editBoolEl = document.getElementById('edit-bool');
+  const editTextWrapEl = document.getElementById('edit-text-wrap');
+  const editHelpDescEl = document.getElementById('edit-help-desc');
+  const editHelpImpactEl = document.getElementById('edit-help-impact');
+  const btnSave = document.getElementById('btn-save');
+  const btnHelpEdit = document.getElementById('btn-help-edit');
+  const btnHelpSave = document.getElementById('btn-help-save');
+
+  // Help edit fields (created lazily)
+  let helpEditWrap = null;
+  let helpTitleEl = null;
+  let helpDescEl = null;
+  let helpImpactEl = null;
+  let helpInputTypeEl = null;
+  let helpEnumValuesEl = null;
+  let helpConstraintsEl = null;
+  let helpExamplesEl = null;
+
+  let dt = null;
+  let lastItemsByKey = {};
+  let currentEditItem = null;
+  let canViewSecrets = false;
+  let canEditHelp = false;
+
+  function formatValue(v) {
+    if (v === null || typeof v === 'undefined') return '';
+    if (typeof v === 'string') return v;
+    try { return JSON.stringify(v); } catch { return String(v); }
+  }
+
+  function formatShortDatetime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso);
+
+    const diffMs = Date.now() - d.getTime();
+    if (diffMs >= 0 && diffMs < 60 * 1000) return 'たった今';
+    if (diffMs >= 0 && diffMs < 60 * 60 * 1000) return `${Math.floor(diffMs / (60 * 1000))}分前`;
+    if (diffMs >= 0 && diffMs < 24 * 60 * 60 * 1000) return `${Math.floor(diffMs / (60 * 60 * 1000))}時間前`;
+
+    return new Intl.DateTimeFormat('ja-JP', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit'
+    }).format(d);
+  }
+
+  async function fetchSettings() {
+    const resp = await fetch('{% url "scheduler_ops:api_settings" %}', { credentials: 'same-origin' });
+    if (!resp.ok) throw new Error('fetch failed');
+    return await resp.json();
+  }
+
+  function renderLatestReload(latest) {
+    if (!latestReloadEl) return;
+    if (!latest) { latestReloadEl.textContent = '—'; return; }
+    const parts = [];
+    parts.push(`last reload: #${latest.id}`);
+    parts.push(`status=${latest.status}`);
+    if (latest.applied_at) parts.push(`applied_at=${latest.applied_at}`);
+    else if (latest.requested_at) parts.push(`requested_at=${latest.requested_at}`);
+    latestReloadEl.textContent = parts.join(' ');
+  }
+
+  function upsertTable(items) {
+    lastItemsByKey = {};
+    for (const it of items) lastItemsByKey[it.key] = it;
+
+    const rows = items.map(it => {
+      const editDisabled = it.editable ? '' : 'disabled';
+      const clearDisabled = (it.db_override && it.editable) ? '' : 'disabled';
+      const actions = `
+        <div class="btn-group btn-group-sm" role="group">
+          <button class="btn btn-outline-primary" data-action="edit" data-key="${it.key}" ${editDisabled}>Edit</button>
+          <button class="btn btn-outline-danger" data-action="clear" data-key="${it.key}" ${clearDisabled}>Clear</button>
+        </div>
+      `;
+      return [it.key, formatValue(it.value), formatShortDatetime(it.db_updated_at), actions];
+    });
+
+    if (!dt) {
+      dt = new DataTable(tableEl, {
+        data: rows,
+        columns: [
+          { title: 'Key' },
+          { title: 'Value' },
+          { title: 'DB updated', width: '120px' },
+          { title: 'Actions', orderable: false, searchable: false, width: '160px' },
+        ],
+        pageLength: 50,
+        order: [[0, 'asc']],
+      });
+    } else {
+      dt.clear();
+      dt.rows.add(rows);
+      dt.draw(false);
+    }
+  }
+
+  async function refresh() {
+    const data = await fetchSettings();
+    if (!data.ok) throw new Error('api not ok');
+    canViewSecrets = !!data.can_view_secrets;
+    canEditHelp = !!data.can_edit_help;
+    if (btnHelpEdit) btnHelpEdit.classList.toggle('d-none', !canEditHelp);
+    if (btnHelpSave) btnHelpSave.classList.add('d-none');
+    upsertTable(data.items || []);
+    renderLatestReload(data.latest_reload);
+    return { server_time: data.server_time };
+  }
+
+  tableEl.addEventListener('click', async function (ev) {
+    const btn = ev.target.closest('button');
+    if (!btn) return;
+    const action = btn.getAttribute('data-action');
+    const key = btn.getAttribute('data-key');
+    if (!action || !key) return;
+
+    if (action === 'edit') {
+      const it = lastItemsByKey[key];
+      currentEditItem = it || null;
+      if (it && it.editable === false) return;
+      editKeyEl.value = key;
+
+      if (editHelpDescEl) editHelpDescEl.textContent = (it && it.help_description) ? String(it.help_description) : '—';
+      if (editHelpImpactEl) editHelpImpactEl.textContent = (it && it.help_impact) ? String(it.help_impact) : '—';
+
+      // reset help editor state
+      if (helpEditWrap) helpEditWrap.classList.add('d-none');
+      if (btnHelpSave) btnHelpSave.classList.add('d-none');
+
+      // Reset
+      if (editEnumWrapEl) editEnumWrapEl.classList.add('d-none');
+      if (editBoolWrapEl) editBoolWrapEl.classList.add('d-none');
+      if (editTextWrapEl) editTextWrapEl.classList.remove('d-none');
+      if (editEnumEl) editEnumEl.innerHTML = '';
+      if (editBoolEl) editBoolEl.checked = false;
+      editValueEl.value = '';
+
+      // For secrets: ops-admin can set (blank default). superuser can view current raw.
+      if (it && it.is_secret) {
+        if (canViewSecrets && typeof it.raw_value !== 'undefined' && it.raw_value !== null) {
+          editValueEl.value = formatValue(it.raw_value);
+        } else {
+          editValueEl.value = '';
+        }
+        modal && modal.show();
+        return;
+      }
+
+      const inputType = it ? (it.input_type || '') : '';
+      const rawValue = it ? it.raw_value : null;
+      if (inputType === 'bool' && editBoolWrapEl && editBoolEl) {
+        editTextWrapEl && editTextWrapEl.classList.add('d-none');
+        editBoolWrapEl.classList.remove('d-none');
+        editBoolEl.checked = String(rawValue).toLowerCase() === 'true';
+      } else if (inputType === 'enum' && editEnumWrapEl && editEnumEl) {
+        editTextWrapEl && editTextWrapEl.classList.add('d-none');
+        editEnumWrapEl.classList.remove('d-none');
+        const allowed = (it && it.enum_values) ? it.enum_values : [];
+        for (const v of allowed) {
+          const opt = document.createElement('option');
+          opt.value = String(v);
+          opt.textContent = String(v);
+          if (String(rawValue) === String(v)) opt.selected = true;
+          editEnumEl.appendChild(opt);
+        }
+      } else {
+        editValueEl.value = it ? formatValue(rawValue ?? it.value) : '';
+      }
+
+      modal && modal.show();
+      return;
+    }
+
+    if (action === 'clear') {
+      if (!confirm(`DB override を削除しますか？\n${key}`)) return;
+      const resp = await fetch('{% url "scheduler_ops:api_settings_delete" %}', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': getCookie('csrftoken'),
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({ key }),
+      });
+      const j = await resp.json();
+      if (!resp.ok || !j.ok) {
+        notyf.error('削除に失敗しました');
+        return;
+      }
+      notyf.success('削除しました');
+      await refresh();
+    }
+  });
+
+  btnSave.addEventListener('click', async function () {
+    const key = (editKeyEl.value || '').trim();
+    if (!key) return;
+
+    let value = null;
+    const it = currentEditItem;
+    if (it && it.is_secret) {
+      value = editValueEl.value;
+    } else if (it && it.input_type === 'bool' && editBoolWrapEl && !editBoolWrapEl.classList.contains('d-none')) {
+      value = !!(editBoolEl && editBoolEl.checked);
+    } else if (it && it.input_type === 'enum' && editEnumWrapEl && !editEnumWrapEl.classList.contains('d-none')) {
+      value = editEnumEl ? editEnumEl.value : '';
+    } else {
+      value = editValueEl.value;
+    }
+    if (!key) return;
+
+    const resp = await fetch('{% url "scheduler_ops:api_settings_set" %}', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': getCookie('csrftoken'),
+      },
+      credentials: 'same-origin',
+      body: JSON.stringify({ key, value }),
+    });
+    const j = await resp.json();
+    if (!resp.ok || !j.ok) {
+      notyf.error('保存に失敗しました');
+      return;
+    }
+    notyf.success('保存しました');
+    modal && modal.hide();
+    await refresh();
+  });
+
+  function ensureHelpEditor() {
+    if (helpEditWrap) return;
+    const body = modalEl ? modalEl.querySelector('.modal-body') : null;
+    if (!body) return;
+    helpEditWrap = document.createElement('div');
+    helpEditWrap.className = 'mt-3 d-none';
+    helpEditWrap.innerHTML = `
+      <hr />
+      <div class="mb-2">
+        <div class="small fw-semibold">ヘルプ（編集）</div>
+      </div>
+      <div class="mb-2">
+        <label class="form-label">Title</label>
+        <input class="form-control form-control-sm" id="help-title" />
+      </div>
+      <div class="mb-2">
+        <label class="form-label">Description</label>
+        <textarea class="form-control form-control-sm" rows="3" id="help-desc"></textarea>
+      </div>
+      <div class="mb-2">
+        <label class="form-label">Impact</label>
+        <textarea class="form-control form-control-sm" rows="3" id="help-impact"></textarea>
+      </div>
+      <div class="row g-2">
+        <div class="col-6">
+          <label class="form-label">Input type</label>
+          <select class="form-select form-select-sm" id="help-input-type">
+            <option value="text">text</option>
+            <option value="bool">bool</option>
+            <option value="enum">enum</option>
+          </select>
+        </div>
+        <div class="col-6">
+          <label class="form-label">Enum values (comma-separated)</label>
+          <input class="form-control form-control-sm" id="help-enum-values" placeholder="例: local,k8s" />
+        </div>
+      </div>
+      <div class="mt-2 mb-2">
+        <label class="form-label">Constraints (JSON) 例: {"min":1,"max":3600}</label>
+        <textarea class="form-control form-control-sm" rows="3" id="help-constraints" placeholder="{}"></textarea>
+      </div>
+      <div class="mb-2">
+        <label class="form-label">Examples (JSON array)</label>
+        <textarea class="form-control form-control-sm" rows="2" id="help-examples" placeholder="[]"></textarea>
+      </div>
+    `;
+    body.appendChild(helpEditWrap);
+    helpTitleEl = document.getElementById('help-title');
+    helpDescEl = document.getElementById('help-desc');
+    helpImpactEl = document.getElementById('help-impact');
+    helpInputTypeEl = document.getElementById('help-input-type');
+    helpEnumValuesEl = document.getElementById('help-enum-values');
+    helpConstraintsEl = document.getElementById('help-constraints');
+    helpExamplesEl = document.getElementById('help-examples');
+  }
+
+  btnHelpEdit && btnHelpEdit.addEventListener('click', function () {
+    ensureHelpEditor();
+    if (!helpEditWrap) return;
+    const it = currentEditItem;
+    if (!it) return;
+    helpEditWrap.classList.toggle('d-none');
+    if (btnHelpSave) btnHelpSave.classList.toggle('d-none');
+
+    if (helpTitleEl) helpTitleEl.value = it.help_title || '';
+    if (helpDescEl) helpDescEl.value = it.help_description || '';
+    if (helpImpactEl) helpImpactEl.value = it.help_impact || '';
+    if (helpInputTypeEl) helpInputTypeEl.value = it.input_type || 'text';
+    if (helpEnumValuesEl) helpEnumValuesEl.value = (it.enum_values || []).join(',');
+    if (helpConstraintsEl) helpConstraintsEl.value = JSON.stringify(it.help_constraints || {});
+    if (helpExamplesEl) helpExamplesEl.value = JSON.stringify(it.help_examples || []);
+  });
+
+  btnHelpSave && btnHelpSave.addEventListener('click', async function () {
+    const it = currentEditItem;
+    if (!it) return;
+    const key = it.key;
+    const payload = {
+      key,
+      title: helpTitleEl ? helpTitleEl.value : '',
+      description: helpDescEl ? helpDescEl.value : '',
+      impact: helpImpactEl ? helpImpactEl.value : '',
+      input_type: helpInputTypeEl ? helpInputTypeEl.value : 'text',
+      enum_values: helpEnumValuesEl ? helpEnumValuesEl.value : '',
+      constraints: helpConstraintsEl ? helpConstraintsEl.value : '{}',
+      examples: helpExamplesEl ? helpExamplesEl.value : '[]',
+    };
+    const resp = await fetch('{% url "scheduler_ops:api_settings_help_set" %}', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': getCookie('csrftoken'),
+      },
+      credentials: 'same-origin',
+      body: JSON.stringify(payload),
+    });
+    const j = await resp.json();
+    if (!resp.ok || !j.ok) {
+      notyf.error('ヘルプ保存に失敗しました');
+      return;
+    }
+    notyf.success('ヘルプを保存しました');
+    await refresh();
+  });
+
+  btnApply.addEventListener('click', async function () {
+    const resp = await fetch('{% url "scheduler_ops:api_settings_apply" %}', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': getCookie('csrftoken'),
+      },
+      credentials: 'same-origin',
+      body: JSON.stringify({}),
+    });
+    const j = await resp.json();
+    if (!resp.ok || !j.ok) {
+      notyf.error('反映要求に失敗しました');
+      return;
+    }
+    notyf.success(`反映要求を作成しました #${j.request_id}`);
+    await refresh();
+  });
+
+  window.schedulerOpsRefresh = refresh;
+  refresh().catch(() => notyf.error('初期ロードに失敗しました'));
+})();
+
+const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]')
+const tooltipList = [...tooltipTriggerList].map(tooltipTriggerEl => new bootstrap.Tooltip(tooltipTriggerEl))
+</script>
+{% endblock %}

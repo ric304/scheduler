@@ -1,0 +1,38 @@
+groups:
+  - name: scheduler
+    rules:
+      - alert: SchedulerNoWorkersOnline
+        expr: scheduler_workers_online < scheduler_workers_min_online
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Scheduler workers online below minimum"
+          description: "workers_online is below configured minimum"
+
+      - alert: SchedulerLeaderMissing
+        expr: scheduler_leader_present == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Scheduler leader missing"
+          description: "No active leader heartbeat detected"
+
+      - alert: SchedulerWorkerRoleChanged
+        expr: (increase(scheduler_worker_role_change_total[5m]) > 0) and on() (scheduler_alert_role_change_enabled == 1)
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker role changed"
+          description: "Leader/SubLeader role changed within last 5 minutes"
+
+      - alert: SchedulerWorkerHighLoad
+        expr: ((scheduler_worker_running_jobs + scheduler_worker_assigned_jobs) > scheduler_worker_high_load_threshold) and on() (scheduler_alert_high_load_enabled == 1)
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker high load"
+          description: "RUNNING+ASSIGNED jobs exceed configured threshold"

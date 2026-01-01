@@ -1,0 +1,970 @@
+{% extends "scheduler_ops/base.html" %}
+{% load scheduler_ops_roles %}
+
+{% block title %}Ops - Home{% endblock %}
+
+{% block page_title %}Dashboard{% endblock %}
+
+{% block content %}
+  <div class="row g-3">
+    <div class="col-12 col-xl-6">
+      <div class="card h-100">
+        <div class="card-body">
+          <div class="d-flex align-items-center justify-content-between">
+            <h2 class="h6 mb-0">Overview</h2>
+            <span class="badge text-bg-secondary">Health</span>
+          </div>
+
+          <div class="row g-3 mt-1">
+            <div class="col-12">
+              <div class="p-3 border rounded bg-body">
+                <div class="text-body-secondary small">Status</div>
+                <div id="ops-health-online" class="fs-4 fw-semibold">—</div>
+                <div id="ops-health-offline-since" class="text-body-secondary small"></div>
+              </div>
+            </div>
+            <div class="col-12">
+              <div class="d-flex gap-2 flex-wrap">
+                <div class="px-2 py-1 border rounded bg-body">
+                  <span class="text-body-secondary small">Minimum Workers</span>
+                  <span id="ops-health-min-workers" class="ms-2 fw-semibold">—</span>
+                  <span id="ops-health-min-workers-detail" class="ms-2 text-body-secondary small"></span>
+                  <button id="btn-min-online-edit" type="button" class="btn btn-sm btn-outline-secondary ms-2" {% if not user|ops_is_admin %}disabled{% endif %}>Edit</button>
+                </div>
+                <div class="px-2 py-1 border rounded bg-body">
+                  <span class="text-body-secondary small">Redis</span>
+                  <span id="ops-health-redis" class="ms-2 fw-semibold">—</span>
+                  <span id="ops-health-redis-detail" class="ms-2 text-body-secondary small"></span>
+                </div>
+                <div class="px-2 py-1 border rounded bg-body">
+                  <span class="text-body-secondary small">Prometheus</span>
+                  <span id="ops-health-prometheus" class="ms-2 fw-semibold">—</span>
+                  <span id="ops-health-prometheus-detail" class="ms-2 text-body-secondary small"></span>
+                </div>
+                <div class="px-2 py-1 border rounded bg-body">
+                  <span class="text-body-secondary small">Alertmanager</span>
+                  <span id="ops-health-alertmanager" class="ms-2 fw-semibold">—</span>
+                  <span id="ops-health-alertmanager-detail" class="ms-2 text-body-secondary small"></span>
+                </div>
+                <div class="px-2 py-1 border rounded bg-body">
+                  <span class="text-body-secondary small">Object Storage</span>
+                  <span id="ops-health-object" class="ms-2 fw-semibold">—</span>
+                  <span id="ops-health-object-detail" class="ms-2 text-body-secondary small"></span>
+                </div>
+                {% if settings.SCHEDULER_DEPLOYMENT == 'k8s' %}
+                  <div class="px-2 py-1 border rounded bg-body">
+                    <span class="text-body-secondary small">K8s API</span>
+                    <span id="ops-health-k8s" class="ms-2 fw-semibold">—</span>
+                    <span id="ops-health-k8s-detail" class="ms-2 text-body-secondary small"></span>
+                  </div>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+
+          <hr class="my-4" />
+          <div class="d-flex align-items-center justify-content-between">
+            <div class="text-body-secondary small">Monitoring</div>
+            <span class="badge text-bg-secondary">Settings</span>
+          </div>
+          <div class="d-flex gap-2 flex-wrap mt-2">
+            <div class="px-2 py-2 border rounded bg-body d-flex align-items-center justify-content-between" style="min-width: 260px; flex: 1 1 0;">
+              <span class="text-body-secondary small">High Load Threshold (jobs)</span>
+              <div class="d-flex align-items-center gap-2">
+                <span id="ops-high-load-threshold" class="fw-semibold">{{ high_load_threshold }}</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary btn-setting-edit"
+                        data-setting-key="SCHEDULER_WORKER_HIGH_LOAD_THRESHOLD"
+                        data-setting-title="High Load Threshold (jobs)"
+                        data-setting-type="number"
+                  data-setting-value="{{ high_load_threshold }}"
+                        data-setting-target="ops-high-load-threshold"
+                        {% if not user|ops_is_admin %}disabled{% endif %}>
+                  Edit
+                </button>
+              </div>
+            </div>
+            <div class="px-2 py-2 border rounded bg-body d-flex align-items-center justify-content-between" style="min-width: 260px; flex: 1 1 0;">
+              <span class="text-body-secondary small">Role Change Alert</span>
+              <div class="d-flex align-items-center gap-2">
+                <span id="ops-role-change-enabled" class="fw-semibold">{% if role_change_enabled %}ON{% else %}OFF{% endif %}</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary btn-setting-edit"
+                        data-setting-key="SCHEDULER_ALERT_ROLE_CHANGE_ENABLED"
+                        data-setting-title="Role Change Alert (0/1)"
+                        data-setting-type="bool"
+                  data-setting-value="{% if role_change_enabled %}1{% else %}0{% endif %}"
+                        data-setting-target="ops-role-change-enabled"
+                        {% if not user|ops_is_admin %}disabled{% endif %}>
+                  Edit
+                </button>
+              </div>
+            </div>
+            <div class="px-2 py-2 border rounded bg-body d-flex align-items-center justify-content-between" style="min-width: 260px; flex: 1 1 0;">
+              <span class="text-body-secondary small">High Load Alert</span>
+              <div class="d-flex align-items-center gap-2">
+                <span id="ops-high-load-enabled" class="fw-semibold">{% if high_load_enabled %}ON{% else %}OFF{% endif %}</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary btn-setting-edit"
+                        data-setting-key="SCHEDULER_ALERT_HIGH_LOAD_ENABLED"
+                        data-setting-title="High Load Alert (0/1)"
+                        data-setting-type="bool"
+                  data-setting-value="{% if high_load_enabled %}1{% else %}0{% endif %}"
+                        data-setting-target="ops-high-load-enabled"
+                        {% if not user|ops_is_admin %}disabled{% endif %}>
+                  Edit
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="d-flex align-items-center justify-content-between mt-3">
+            <div class="text-body-secondary small">Notifications</div>
+            <span class="badge text-bg-secondary">Settings</span>
+          </div>
+          <div class="d-flex gap-2 flex-wrap mt-2">
+            <div class="px-2 py-2 border rounded bg-body d-flex align-items-center justify-content-between" style="min-width: 260px; flex: 1 1 0;">
+              <span class="text-body-secondary small">Slack</span>
+              <div class="d-flex align-items-center gap-2">
+                <span id="ops-notify-slack" class="fw-semibold">{% if notify_slack_configured %}SET{% else %}DISABLED{% endif %}</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary btn-setting-edit"
+                        data-setting-key="SCHEDULER_NOTIFY_SLACK_WEBHOOK_URL"
+                        data-setting-title="Slack Webhook URL"
+                        data-setting-type="secret"
+                        data-setting-target="ops-notify-slack"
+                        {% if not user|ops_is_admin %}disabled{% endif %}>
+                  Edit
+                </button>
+              </div>
+            </div>
+            <div class="px-2 py-2 border rounded bg-body d-flex align-items-center justify-content-between" style="min-width: 260px; flex: 1 1 0;">
+              <span class="text-body-secondary small">Teams</span>
+              <div class="d-flex align-items-center gap-2">
+                <span id="ops-notify-teams" class="fw-semibold">{% if notify_teams_configured %}SET{% else %}DISABLED{% endif %}</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary btn-setting-edit"
+                        data-setting-key="SCHEDULER_NOTIFY_TEAMS_WEBHOOK_URL"
+                        data-setting-title="Teams Webhook URL"
+                        data-setting-type="secret"
+                        data-setting-target="ops-notify-teams"
+                        {% if not user|ops_is_admin %}disabled{% endif %}>
+                  Edit
+                </button>
+              </div>
+            </div>
+            <div class="px-2 py-2 border rounded bg-body d-flex align-items-center justify-content-between" style="min-width: 260px; flex: 1 1 0;">
+              <span class="text-body-secondary small">Email (to)</span>
+              <div class="d-flex align-items-center gap-2">
+                <span id="ops-notify-email" class="fw-semibold">{% if notify_email_to %}SET{% else %}DISABLED{% endif %}</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary btn-setting-edit"
+                        data-setting-key="SCHEDULER_NOTIFY_EMAIL_TO"
+                        data-setting-title="Notify Email To"
+                        data-setting-type="text"
+                        data-setting-value="{{ notify_email_to|escape }}"
+                        data-setting-target="ops-notify-email"
+                        {% if not user|ops_is_admin %}disabled{% endif %}>
+                  Edit
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <hr class="my-4" />
+          <div class="d-flex align-items-center justify-content-between">
+            <h3 class="h6 mb-0">Alert Log</h3>
+            <span class="badge text-bg-secondary">Prometheus</span>
+          </div>
+          <div id="ops-alerts-disabled" class="text-body-secondary small mt-3" style="display:none;">
+            Prometheus が未設定です（`SCHEDULER_PROMETHEUS_URL`）。
+          </div>
+          <div id="ops-alerts-error" class="text-warning small mt-3" style="display:none;"></div>
+          <div id="ops-alerts-table-wrap" class="table-responsive mt-2">
+            <table id="ops-alerts-table" class="table table-sm table-striped mb-0">
+              <thead>
+                <tr>
+                  <th>state</th>
+                  <th>alert</th>
+                  <th>severity</th>
+                  <th>since</th>
+                  <th>summary</th>
+                  <th class="text-end">action</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-12 col-xl-6">
+      <div class="card h-100">
+        <div class="card-body">
+          <div class="d-flex align-items-center justify-content-between">
+            <h2 class="h6 mb-0">System Load</h2>
+            <div class="d-flex align-items-center gap-2">
+              <a class="btn btn-sm btn-outline-secondary" href="{% url 'scheduler_ops:job_runs' %}">JobRuns</a>
+              <span class="badge text-bg-secondary">Prometheus</span>
+            </div>
+          </div>
+
+          <div class="mt-3">
+            <div class="text-body-secondary small">Workers (sum)</div>
+            <div class="d-flex gap-3 flex-wrap mt-1">
+              <div>
+                <div class="text-body-secondary small">running jobs</div>
+                <div id="ops-wsum-running" class="fw-semibold">—</div>
+              </div>
+              <div>
+                <div class="text-body-secondary small">assigned jobs</div>
+                <div id="ops-wsum-assigned" class="fw-semibold">—</div>
+              </div>
+              <div>
+                <div class="text-body-secondary small">effective load</div>
+                <div id="ops-wsum-load" class="fw-semibold">—</div>
+              </div>
+              <div>
+                <div class="text-body-secondary small">succeeded (5m)</div>
+                <div id="ops-wsum-succeeded" class="fw-semibold">—</div>
+              </div>
+              <div>
+                <div class="text-body-secondary small">failed (5m)</div>
+                <div id="ops-wsum-failed" class="fw-semibold">—</div>
+              </div>
+              <div>
+                <div class="text-body-secondary small">canceled (5m)</div>
+                <div id="ops-wsum-canceled" class="fw-semibold">—</div>
+              </div>
+              <div>
+                <div class="text-body-secondary small">timed out (5m)</div>
+                <div id="ops-wsum-timedout" class="fw-semibold">—</div>
+              </div>
+              <div>
+                <div class="text-body-secondary small">skipped (5m)</div>
+                <div id="ops-wsum-skipped" class="fw-semibold">—</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="row g-3 mt-1">
+            <div class="col-6">
+              <div class="p-3 border rounded bg-body">
+                <div class="text-body-secondary small">CPU (5m) cores</div>
+                <div id="ops-load-cpu" class="fs-4 fw-semibold">—</div>
+                <svg id="ops-spark-cpu" viewBox="0 0 100 24" preserveAspectRatio="none" class="w-100" style="height: 28px;"></svg>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="p-3 border rounded bg-body">
+                <div class="text-body-secondary small">Mem p95 (5m)</div>
+                <div id="ops-load-mem" class="fs-4 fw-semibold">—</div>
+                <svg id="ops-spark-mem" viewBox="0 0 100 24" preserveAspectRatio="none" class="w-100" style="height: 28px;"></svg>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="p-3 border rounded bg-body">
+                <div class="text-body-secondary small">IO read (5m)</div>
+                <div id="ops-load-io-read" class="fs-4 fw-semibold">—</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="p-3 border rounded bg-body">
+                <div class="text-body-secondary small">IO write (5m)</div>
+                <div id="ops-load-io-write" class="fs-4 fw-semibold">—</div>
+              </div>
+            </div>
+          </div>
+
+          <hr class="my-4" />
+          <div class="d-flex align-items-center justify-content-between">
+            <div class="text-body-secondary small">Top Workers (drilldown)</div>
+            <a class="btn btn-sm btn-outline-secondary" href="{% url 'scheduler_ops:workers' %}">Workers</a>
+          </div>
+          <div class="table-responsive mt-2">
+            <table class="table table-sm table-striped mb-0">
+              <thead>
+                <tr>
+                  <th>worker</th>
+                  <th>node</th>
+                  <th>role</th>
+                  <th class="text-end">score</th>
+                  <th class="text-end">cpu</th>
+                  <th class="text-end">mem</th>
+                  <th class="text-end">io</th>
+                  <th class="text-end">drilldown</th>
+                </tr>
+              </thead>
+              <tbody id="ops-top-workers">
+                <tr><td colspan="8" class="text-body-secondary">—</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="modal fade" id="modal-silence" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Alert Silence</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="text-body-secondary small">以下のアラートをSilenceします（Alertmanager）。</div>
+          <div class="mt-2">
+            <div class="small fw-semibold">alert</div>
+            <div id="silence-alert-name" class="font-monospace small">—</div>
+          </div>
+          <div class="mt-2">
+            <div class="small fw-semibold">matchers</div>
+            <div id="silence-alert-matchers" class="font-monospace small">—</div>
+          </div>
+          <div class="mt-3">
+            <label class="form-label small">duration (minutes)</label>
+            <input id="silence-duration" type="number" class="form-control form-control-sm" min="1" max="10080" value="60" />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">キャンセル</button>
+          <button id="btn-silence-confirm" type="button" class="btn btn-danger btn-sm">Silence</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal fade" id="modal-setting-edit" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 id="setting-edit-title" class="modal-title">Edit Setting</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <input id="setting-edit-key" type="hidden" />
+          <input id="setting-edit-type" type="hidden" />
+          <input id="setting-edit-target" type="hidden" />
+          <div class="mt-2">
+            <label class="form-label small">value</label>
+            <input id="setting-edit-input" type="text" class="form-control form-control-sm" />
+            <div id="setting-edit-feedback" class="invalid-feedback"></div>
+          </div>
+          <div id="setting-edit-note" class="text-body-secondary small mt-2"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">キャンセル</button>
+          <button id="btn-setting-edit-save" type="button" class="btn btn-primary btn-sm">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal fade" id="modal-min-online" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Min Online Workers</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="text-body-secondary small">SCHEDULER_MIN_ONLINE_WORKERS を変更します（DB override）。</div>
+          <div class="mt-3">
+            <label class="form-label small">value</label>
+            <input id="min-online-input" type="number" class="form-control form-control-sm" min="0" max="10000" />
+            <div id="min-online-feedback" class="invalid-feedback"></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">キャンセル</button>
+          <button id="btn-min-online-save" type="button" class="btn btn-primary btn-sm">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    (function () {
+      const notyf = new Notyf({ duration: 2500 });
+
+      function getCookie(name) {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) return parts.pop().split(';').shift();
+        return '';
+      }
+
+      // Ack store (shared across refresh + event handlers)
+      const ackStoreKey = 'scheduler_ops_ack_alerts';
+      function loadAck() {
+        try { return JSON.parse(localStorage.getItem(ackStoreKey) || '{}') || {}; } catch { return {}; }
+      }
+      function saveAck(map) {
+        try { localStorage.setItem(ackStoreKey, JSON.stringify(map || {})); } catch {}
+      }
+
+      const activeWorkersEl = document.getElementById('ops-active-workers');
+      const leaderEpochEl = document.getElementById('ops-leader-epoch');
+      const minOnlineEl = document.getElementById('ops-health-min-workers-detail');
+
+      const minOnlineModalEl = document.getElementById('modal-min-online');
+      const minOnlineModal = minOnlineModalEl ? new bootstrap.Modal(minOnlineModalEl) : null;
+      const minOnlineEditBtn = document.getElementById('btn-min-online-edit');
+      const minOnlineInput = document.getElementById('min-online-input');
+      const minOnlineFeedback = document.getElementById('min-online-feedback');
+      const minOnlineSaveBtn = document.getElementById('btn-min-online-save');
+
+      const canSilence = ("{{ user|ops_is_admin|yesno:'true,false' }}" === "true");
+
+      const settingEditModalEl = document.getElementById('modal-setting-edit');
+      const settingEditModal = settingEditModalEl ? new bootstrap.Modal(settingEditModalEl) : null;
+      const settingEditTitleEl = document.getElementById('setting-edit-title');
+      const settingEditKeyEl = document.getElementById('setting-edit-key');
+      const settingEditTypeEl = document.getElementById('setting-edit-type');
+      const settingEditTargetEl = document.getElementById('setting-edit-target');
+      const settingEditInputEl = document.getElementById('setting-edit-input');
+      const settingEditFeedbackEl = document.getElementById('setting-edit-feedback');
+      const settingEditNoteEl = document.getElementById('setting-edit-note');
+      const settingEditSaveBtn = document.getElementById('btn-setting-edit-save');
+      const silenceModalEl = document.getElementById('modal-silence');
+      const silenceModal = silenceModalEl ? new bootstrap.Modal(silenceModalEl) : null;
+      const silenceNameEl = document.getElementById('silence-alert-name');
+      const silenceMatchersEl = document.getElementById('silence-alert-matchers');
+      const silenceDurationEl = document.getElementById('silence-duration');
+      const silenceConfirmEl = document.getElementById('btn-silence-confirm');
+      let pendingSilence = null;
+
+      // Alert Log (DataTables)
+      const alertsTableEl = document.getElementById('ops-alerts-table');
+      const alertsTableWrapEl = document.getElementById('ops-alerts-table-wrap');
+      let alertsDt = null;
+      if (alertsTableEl) {
+        alertsDt = new DataTable(alertsTableEl, {
+          stateSave: true,
+          pageLength: 10,
+          order: [[3, 'desc']],
+          columnDefs: [
+            { targets: 5, orderable: false, searchable: false },
+          ],
+          language: {
+            emptyTable: 'NO RECORD',
+            infoEmpty: 'NO RECORD',
+            zeroRecords: 'NO RECORD',
+          },
+        });
+
+        // Event delegation for Ack/Silence buttons
+        alertsTableEl.addEventListener('click', function (ev) {
+          const ackBtn = ev.target.closest('button[data-ack-key]');
+          if (ackBtn) {
+            const key = decodeURIComponent(String(ackBtn.getAttribute('data-ack-key') || ''));
+            try {
+              const map = loadAck();
+              map[key] = { acked_at: new Date().toISOString() };
+              saveAck(map);
+            } catch {}
+
+            try {
+              const tr = ackBtn.closest('tr');
+              if (tr && alertsDt) {
+                alertsDt.row(tr).remove();
+                alertsDt.draw(false);
+              }
+            } catch {}
+            return;
+          }
+
+          const silenceBtn = ev.target.closest('button[data-silence-matchers]');
+          if (silenceBtn) {
+            if (!silenceModal) return;
+            const name = decodeURIComponent(String(silenceBtn.getAttribute('data-silence-name') || ''));
+            const raw = decodeURIComponent(String(silenceBtn.getAttribute('data-silence-matchers') || '[]'));
+            let matchers = [];
+            try { matchers = JSON.parse(raw) || []; } catch { matchers = []; }
+            pendingSilence = { name, matchers };
+            if (silenceNameEl) silenceNameEl.textContent = name || '—';
+            if (silenceMatchersEl) silenceMatchersEl.textContent = JSON.stringify(matchers);
+            if (silenceDurationEl) silenceDurationEl.value = '60';
+            silenceModal.show();
+          }
+        });
+      }
+
+      function fmtBytes(n) {
+        const v = Number(n);
+        if (!Number.isFinite(v)) return '—';
+        const abs = Math.abs(v);
+        const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+        let u = 0;
+        let x = abs;
+        while (x >= 1024 && u < units.length - 1) { x /= 1024; u += 1; }
+        const sign = v < 0 ? '-' : '';
+        return sign + x.toFixed(x >= 10 ? 0 : 1) + units[u];
+      }
+
+      function fmtRateBytesPerSec(n) {
+        const v = Number(n);
+        if (!Number.isFinite(v)) return '—';
+        return fmtBytes(v) + '/s';
+      }
+
+      function fmtSeconds(n) {
+        const v = Number(n);
+        if (!Number.isFinite(v)) return '—';
+        return v.toFixed(v >= 10 ? 0 : 1) + 's';
+      }
+
+      function renderSpark(svgEl, points) {
+        if (!svgEl) return;
+        const series = Array.isArray(points) ? points : [];
+        if (series.length < 2) {
+          svgEl.innerHTML = '';
+          return;
+        }
+        const vals = series.map(p => Number(p[1])).filter(v => Number.isFinite(v));
+        if (vals.length < 2) {
+          svgEl.innerHTML = '';
+          return;
+        }
+        const min = Math.min(...vals);
+        const max = Math.max(...vals);
+        const range = (max - min) || 1;
+        const w = 100;
+        const h = 24;
+        const pts = series.map((p, i) => {
+          const x = (i / (series.length - 1)) * w;
+          const v = Number(p[1]);
+          const y = h - ((v - min) / range) * (h - 2) - 1;
+          return `${x.toFixed(2)},${y.toFixed(2)}`;
+        }).join(' ');
+
+        svgEl.innerHTML = `
+          <polyline fill="none" stroke="currentColor" stroke-width="1.5" points="${pts}"></polyline>
+        `;
+        svgEl.classList.add('text-body-secondary');
+      }
+
+      window.schedulerOpsRefresh = async function () {
+        const url = "{% url 'scheduler_ops:api_dashboard' %}?_=" + Date.now();
+        const data = await (window.schedulerOpsGetJSON ? window.schedulerOpsGetJSON(url) : $.getJSON(url));
+        if (activeWorkersEl) activeWorkersEl.textContent = String(data.active_workers ?? '—');
+        if (leaderEpochEl) leaderEpochEl.textContent = String(data.leadership?.cluster_epoch ?? '—');
+
+        // Health / connectivity
+        const health = data.health || {};
+        const onlineEl = document.getElementById('ops-health-online');
+        const offlineSinceEl = document.getElementById('ops-health-offline-since');
+        if (onlineEl) {
+          const online = Boolean(health.online);
+          onlineEl.textContent = online ? 'HEALTHY' : 'UNHEALTHY';
+          onlineEl.classList.toggle('text-success', online);
+          onlineEl.classList.toggle('text-danger', !online);
+        }
+        if (offlineSinceEl) {
+          const s = health.offline_since;
+          offlineSinceEl.textContent = s ? ('since ' + String(s)) : '';
+        }
+
+        // Minimum Workers (active >= min_online)
+        const minWorkers = health.min_workers || {};
+        const mwMain = document.getElementById('ops-health-min-workers');
+        const mwDetail = document.getElementById('ops-health-min-workers-detail');
+        if (mwMain) {
+          const ok = Boolean(minWorkers.ok);
+          mwMain.textContent = ok ? 'OK' : 'ERROR';
+          mwMain.classList.toggle('text-success', ok);
+          mwMain.classList.toggle('text-danger', !ok);
+        }
+        if (mwDetail) {
+          const d = minWorkers.detail ? String(minWorkers.detail) : '';
+          mwDetail.textContent = d ? d : '';
+        }
+
+        function setHealth(prefix, h) {
+          const main = document.getElementById(prefix);
+          const detail = document.getElementById(prefix + '-detail');
+          const enabled = Boolean(h?.enabled);
+          const ok = Boolean(h?.ok);
+          const d = h?.detail ? String(h.detail) : '';
+          if (main) {
+            if (!enabled) {
+              main.textContent = 'DISABLED';
+              main.classList.remove('text-success', 'text-danger');
+              main.classList.add('text-body-secondary');
+            } else {
+              main.textContent = ok ? 'OK' : 'ERROR';
+              main.classList.toggle('text-success', ok);
+              main.classList.toggle('text-danger', !ok);
+              main.classList.remove('text-body-secondary');
+            }
+          }
+          if (detail) {
+            detail.textContent = (!enabled || ok || !d) ? '' : d;
+          }
+        }
+
+        setHealth('ops-health-redis', health.redis);
+        setHealth('ops-health-prometheus', health.prometheus);
+        setHealth('ops-health-alertmanager', health.alertmanager);
+        setHealth('ops-health-object', health.object_storage);
+        // Optional element (only rendered when deployment=k8s)
+        setHealth('ops-health-k8s', health.k8s_api);
+
+        // Alerts (Prometheus)
+        const alerts = data.alerts || {};
+        const alertsDisabledEl = document.getElementById('ops-alerts-disabled');
+        const alertsErrEl = document.getElementById('ops-alerts-error');
+        if (alertsTableWrapEl) alertsTableWrapEl.style.display = alerts.enabled ? '' : 'none';
+        if (alertsDisabledEl) alertsDisabledEl.style.display = alerts.enabled ? 'none' : '';
+        if (alertsErrEl) {
+          if (alerts.enabled && alerts.ok === false && alerts.error) {
+            alertsErrEl.textContent = 'Prometheus alerts error: ' + String(alerts.error);
+            alertsErrEl.style.display = '';
+          } else {
+            alertsErrEl.textContent = '';
+            alertsErrEl.style.display = 'none';
+          }
+        }
+        function fmtIso(iso) {
+          if (!iso) return '—';
+          const dt = new Date(String(iso));
+          if (Number.isNaN(dt.getTime())) return String(iso);
+          return dt.toLocaleString('ja-JP', { hour12: false });
+        }
+        function alertKey(a) {
+          try {
+            const labels = a.labels || {};
+            const entries = Object.keys(labels).sort().map(k => [k, String(labels[k])]);
+            // Include active_at so Ack applies only to this firing instance.
+            // Otherwise the same alert (same labels) will be hidden forever across re-fires.
+            return JSON.stringify(entries) + '|' + String(a.active_at || '');
+          } catch {
+            return String(a.name || '') + ':' + String(a.active_at || '');
+          }
+        }
+        const canSilenceNow = canSilence && Boolean(health?.alertmanager?.enabled) && Boolean(health?.alertmanager?.ok);
+
+        if (alertsDt) {
+          if (!alerts.enabled) {
+            alertsDt.clear();
+            alertsDt.draw(false);
+          } else {
+            const ackMap = loadAck();
+            const list = Array.isArray(alerts.alerts) ? alerts.alerts : [];
+            const visible = list.filter(a => !ackMap[alertKey(a)]);
+            const rows = visible.map(a => {
+              const k = alertKey(a);
+              const state = String(a.state || '');
+              const name = String(a.name || '');
+              const sev = String(a.severity || '');
+              const since = fmtIso(a.active_at);
+              const summary = String(a.summary || '');
+              const labels = a.labels || {};
+              const matchers = [
+                { name: 'alertname', value: name, isRegex: false },
+              ];
+              if (labels.node_id) matchers.push({ name: 'node_id', value: String(labels.node_id), isRegex: false });
+              if (!labels.node_id && labels.instance) {
+                matchers.push({ name: 'instance', value: String(labels.instance), isRegex: false });
+              }
+              const matchersJson = encodeURIComponent(JSON.stringify(matchers));
+              const actionHtml = `
+                <div class="d-flex justify-content-end gap-1">
+                  <button type="button" class="btn btn-sm btn-outline-secondary" data-ack-key="${encodeURIComponent(k)}">Ack</button>
+                  <button type="button" class="btn btn-sm btn-outline-danger" data-silence-name="${encodeURIComponent(name)}" data-silence-matchers="${matchersJson}" ${canSilenceNow ? '' : 'disabled'}>Silence</button>
+                </div>
+              `;
+              return [
+                `<span class="font-monospace">${state}</span>`,
+                `<span class="font-monospace">${name}</span>`,
+                sev,
+                `<span class="font-monospace">${since}</span>`,
+                summary,
+                actionHtml,
+              ];
+            });
+            alertsDt.clear();
+            alertsDt.rows.add(rows);
+            alertsDt.draw(false);
+          }
+        }
+
+        if (minOnlineEditBtn && !minOnlineEditBtn._bound) {
+          minOnlineEditBtn._bound = true;
+          minOnlineEditBtn.addEventListener('click', function () {
+            if (!minOnlineModal || !minOnlineInput) return;
+            if (minOnlineFeedback) minOnlineFeedback.textContent = '';
+            minOnlineInput.classList.remove('is-invalid');
+            const cur = Number(health?.min_online_workers);
+            minOnlineInput.value = Number.isFinite(cur) ? String(cur) : '';
+            minOnlineModal.show();
+          });
+        }
+
+        if (minOnlineSaveBtn && !minOnlineSaveBtn._bound) {
+          minOnlineSaveBtn._bound = true;
+          minOnlineSaveBtn.addEventListener('click', async function () {
+            if (!minOnlineInput) return;
+            const v = Number(minOnlineInput.value);
+            if (!Number.isFinite(v) || v < 0 || Math.floor(v) !== v) {
+              minOnlineInput.classList.add('is-invalid');
+              if (minOnlineFeedback) minOnlineFeedback.textContent = '0以上の整数を入力してください';
+              return;
+            }
+            minOnlineInput.classList.remove('is-invalid');
+            if (minOnlineFeedback) minOnlineFeedback.textContent = '';
+            try {
+              const resp = await fetch('{% url "scheduler_ops:api_settings_set" %}', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-CSRFToken': getCookie('csrftoken'),
+                },
+                body: JSON.stringify({ key: 'SCHEDULER_MIN_ONLINE_WORKERS', value: Math.floor(v) }),
+              });
+              const out = await resp.json().catch(() => ({}));
+              if (!resp.ok || !out.ok) throw new Error(out.error || ('HTTP ' + resp.status));
+              if (minOnlineEl) minOnlineEl.textContent = String(Math.floor(v));
+              notyf.success('Saved');
+              minOnlineModal && minOnlineModal.hide();
+            } catch (e) {
+              notyf.error('Save failed');
+              console.error(e);
+            }
+          });
+        }
+
+        if (silenceConfirmEl && !silenceConfirmEl._bound) {
+          silenceConfirmEl._bound = true;
+          silenceConfirmEl.addEventListener('click', async function () {
+            if (!pendingSilence) return;
+            const dur = Number(silenceDurationEl ? silenceDurationEl.value : 60) || 60;
+            try {
+              const resp = await fetch('{% url "scheduler_ops:api_alertmanager_silence_create" %}', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-CSRFToken': getCookie('csrftoken'),
+                },
+                body: JSON.stringify({ matchers: pendingSilence.matchers, duration_minutes: dur }),
+              });
+              const data = await resp.json().catch(() => ({}));
+              if (!resp.ok || !data.ok) throw new Error(data.error || ('HTTP ' + resp.status));
+              notyf.success('Silenced');
+              pendingSilence = null;
+              silenceModal && silenceModal.hide();
+              // Let next auto-refresh update alerts.
+            } catch (e) {
+              notyf.error('Silence failed');
+              console.error(e);
+            }
+          });
+        }
+
+        // Worker-sum load (always available)
+        const wt = data.workers?.totals || {};
+        const wsumRunEl = document.getElementById('ops-wsum-running');
+        const wsumAsgEl = document.getElementById('ops-wsum-assigned');
+        const wsumLoadEl = document.getElementById('ops-wsum-load');
+        if (wsumRunEl) wsumRunEl.textContent = String(wt.running_jobs ?? '—');
+        if (wsumAsgEl) wsumAsgEl.textContent = String(wt.assigned_jobs ?? '—');
+        if (wsumLoadEl) wsumLoadEl.textContent = String(wt.effective_load ?? '—');
+
+        // Finished counts (Prometheus)
+        const wsumSucEl = document.getElementById('ops-wsum-succeeded');
+        const wsumFailEl = document.getElementById('ops-wsum-failed');
+        const wsumCanEl = document.getElementById('ops-wsum-canceled');
+        const wsumToEl = document.getElementById('ops-wsum-timedout');
+        const wsumSkipEl = document.getElementById('ops-wsum-skipped');
+
+        const topBody = document.getElementById('ops-top-workers');
+        if (topBody) {
+          const rows = Array.isArray(data.workers?.top) ? data.workers.top : [];
+          if (rows.length === 0) {
+            topBody.innerHTML = '<tr><td colspan="8" class="text-body-secondary">0</td></tr>';
+          } else {
+            topBody.innerHTML = rows.map(w => {
+              const wid = String(w.worker_id ?? '');
+              const nodeId = String(w.node_id ?? '');
+              const role = (w.is_leader ? 'leader' : (w.is_subleader ? 'subleader' : 'worker'));
+              const score = Number(w.normalized_load ?? 0);
+              const recent = w.recent || {};
+              const cpu = recent.cpu_seconds_total;
+              const mem = recent.peak_rss_bytes_max;
+              const ioR = recent.io_read_bytes_total;
+              const ioW = recent.io_write_bytes_total;
+              const jrUrl = "{% url 'scheduler_ops:job_runs' %}" + `?worker_id=${encodeURIComponent(wid)}`;
+              return `
+                <tr>
+                  <td class="font-monospace">${wid}</td>
+                  <td class="font-monospace">${nodeId}</td>
+                  <td>${role}</td>
+                  <td class="text-end font-monospace">${score.toFixed(3)}</td>
+                  <td class="text-end font-monospace">${fmtSeconds(cpu)}</td>
+                  <td class="text-end font-monospace">${fmtBytes(mem)}</td>
+                  <td class="text-end font-monospace">${fmtBytes(ioR)} / ${fmtBytes(ioW)}</td>
+                  <td class="text-end"><a class="btn btn-sm btn-outline-light" href="${jrUrl}">JobRuns</a></td>
+                </tr>
+              `;
+            }).join('');
+          }
+        }
+
+        const p = data.prometheus || {};
+        const finished = p.finished_5m || {};
+
+        // (Job Metrics card removed)
+        function setFinished(el, key) {
+          if (!el) return;
+          if (!p.enabled) { el.textContent = '—'; return; }
+          const v = Number(finished?.[key] ?? 0);
+          el.textContent = Number.isFinite(v) ? v.toFixed(0) : '0';
+        }
+        setFinished(wsumSucEl, 'SUCCEEDED');
+        setFinished(wsumFailEl, 'FAILED');
+        setFinished(wsumCanEl, 'CANCELED');
+        setFinished(wsumToEl, 'TIMED_OUT');
+        setFinished(wsumSkipEl, 'SKIPPED');
+
+        // Overall load
+        const load = p.load || {};
+        const cpuEl = document.getElementById('ops-load-cpu');
+        const memEl = document.getElementById('ops-load-mem');
+        const ioReadEl = document.getElementById('ops-load-io-read');
+        const ioWriteEl = document.getElementById('ops-load-io-write');
+        if (cpuEl) cpuEl.textContent = p.enabled && load.cpu_cores_5m != null ? Number(load.cpu_cores_5m).toFixed(2) : '—';
+        if (memEl) memEl.textContent = p.enabled && load.mem_p95_bytes_5m != null ? fmtBytes(load.mem_p95_bytes_5m) : '—';
+        if (ioReadEl) ioReadEl.textContent = p.enabled && load.io_read_bps_5m != null ? fmtRateBytesPerSec(load.io_read_bps_5m) : '—';
+        if (ioWriteEl) ioWriteEl.textContent = p.enabled && load.io_write_bps_5m != null ? fmtRateBytesPerSec(load.io_write_bps_5m) : '—';
+
+        const sp = p.sparklines || {};
+        renderSpark(document.getElementById('ops-spark-cpu'), sp.cpu_cores_5m);
+        renderSpark(document.getElementById('ops-spark-mem'), sp.mem_p95_bytes_5m);
+        return { server_time: data.server_time };
+      };
+
+      function bindSettingEditors() {
+        document.querySelectorAll('button.btn-setting-edit').forEach(btn => {
+          if (btn._bound) return;
+          btn._bound = true;
+          btn.addEventListener('click', function () {
+            if (!settingEditModal || !settingEditInputEl || !settingEditKeyEl || !settingEditTypeEl || !settingEditTargetEl) return;
+            const key = String(btn.getAttribute('data-setting-key') || '');
+            const title = String(btn.getAttribute('data-setting-title') || key);
+            const type = String(btn.getAttribute('data-setting-type') || 'text');
+            const target = String(btn.getAttribute('data-setting-target') || '');
+            const v = String(btn.getAttribute('data-setting-value') || '');
+
+            if (settingEditTitleEl) settingEditTitleEl.textContent = title;
+            settingEditKeyEl.value = key;
+            settingEditTypeEl.value = type;
+            settingEditTargetEl.value = target;
+
+            settingEditInputEl.classList.remove('is-invalid');
+            if (settingEditFeedbackEl) settingEditFeedbackEl.textContent = '';
+
+            if (type === 'number' || type === 'bool') {
+              settingEditInputEl.type = 'number';
+              settingEditInputEl.min = '0';
+              settingEditInputEl.max = (type === 'bool') ? '1' : '1000000';
+              settingEditInputEl.step = '1';
+              settingEditInputEl.value = v || '';
+              if (settingEditNoteEl) settingEditNoteEl.textContent = (type === 'bool') ? '0 または 1 を入力してください' : '';
+            } else if (type === 'secret') {
+              settingEditInputEl.type = 'text';
+              settingEditInputEl.value = '';
+              if (settingEditNoteEl) settingEditNoteEl.textContent = '現在値は表示しません（空で保存すると無効化）';
+            } else {
+              settingEditInputEl.type = 'text';
+              settingEditInputEl.value = v || '';
+              if (settingEditNoteEl) settingEditNoteEl.textContent = '';
+            }
+
+            settingEditModal.show();
+          });
+        });
+
+        if (settingEditSaveBtn && !settingEditSaveBtn._bound) {
+          settingEditSaveBtn._bound = true;
+          settingEditSaveBtn.addEventListener('click', async function () {
+            if (!settingEditInputEl || !settingEditKeyEl || !settingEditTypeEl || !settingEditTargetEl) return;
+            const key = String(settingEditKeyEl.value || '');
+            const type = String(settingEditTypeEl.value || 'text');
+            const targetId = String(settingEditTargetEl.value || '');
+            let value;
+
+            if (type === 'number') {
+              const v = Number(settingEditInputEl.value);
+              if (!Number.isFinite(v) || v < 0 || Math.floor(v) !== v) {
+                settingEditInputEl.classList.add('is-invalid');
+                if (settingEditFeedbackEl) settingEditFeedbackEl.textContent = '0以上の整数を入力してください';
+                return;
+              }
+              value = Math.floor(v);
+            } else if (type === 'bool') {
+              const v = Number(settingEditInputEl.value);
+              if (!(v === 0 || v === 1)) {
+                settingEditInputEl.classList.add('is-invalid');
+                if (settingEditFeedbackEl) settingEditFeedbackEl.textContent = '0 または 1 を入力してください';
+                return;
+              }
+              value = Math.floor(v);
+            } else {
+              value = String(settingEditInputEl.value || '');
+            }
+
+            settingEditInputEl.classList.remove('is-invalid');
+            if (settingEditFeedbackEl) settingEditFeedbackEl.textContent = '';
+
+            try {
+              const resp = await fetch('{% url "scheduler_ops:api_settings_set" %}', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-CSRFToken': getCookie('csrftoken'),
+                },
+                body: JSON.stringify({ key, value }),
+              });
+              const out = await resp.json().catch(() => ({}));
+              if (!resp.ok || !out.ok) throw new Error(out.error || ('HTTP ' + resp.status));
+
+              if (targetId) {
+                const el = document.getElementById(targetId);
+                if (el) {
+                  if (type === 'bool') {
+                    el.textContent = (Number(value) === 1) ? 'ON' : 'OFF';
+                  } else if (key === 'SCHEDULER_NOTIFY_EMAIL_TO') {
+                    el.textContent = String(value || '').trim() ? 'SET' : 'DISABLED';
+                  } else if (type === 'secret') {
+                    el.textContent = String(value || '').trim() ? 'SET' : 'DISABLED';
+                  } else {
+                    el.textContent = String(value);
+                  }
+                }
+              }
+
+              // Keep button dataset in sync for non-secret text
+              document.querySelectorAll(`button.btn-setting-edit[data-setting-key="${key}"]`).forEach(b => {
+                const t = String(b.getAttribute('data-setting-type') || '');
+                if (t === 'text' || t === 'number' || t === 'bool') {
+                  b.setAttribute('data-setting-value', String(value));
+                }
+              });
+
+              notyf.success('Saved');
+              settingEditModal && settingEditModal.hide();
+            } catch (e) {
+              notyf.error('Save failed');
+              console.error(e);
+            }
+          });
+        }
+      }
+
+      // Bind once on load
+      bindSettingEditors();
+    })();
+  </script>
+{% endblock %}

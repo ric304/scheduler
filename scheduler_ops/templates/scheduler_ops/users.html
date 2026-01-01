@@ -1,0 +1,373 @@
+{% extends 'scheduler_ops/base.html' %}
+
+{% block title %}Users | Scheduler Ops{% endblock %}
+
+{% block page_title %}Users{% endblock %}
+
+{% block content %}
+  <div class="d-flex align-items-center gap-2 mb-3">
+    <button id="btn-create" class="btn btn-primary btn-sm">Create user</button>
+    <div class="text-body-secondary small" id="users-hint">スーパーユーザのみ（ユーザ追加/ロール付与）</div>
+  </div>
+
+  <div class="card">
+    <div class="card-body">
+      <table id="users-table" class="table table-striped table-hover table-sm" style="width: 100%">
+        <thead>
+          <tr>
+            <th>id</th>
+            <th>username</th>
+            <th>active</th>
+            <th>roles</th>
+            <th>last_login</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="modal fade" id="modal-user" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="modal-title">User</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-2">
+            <label class="form-label">Username</label>
+            <input id="user-username" type="text" class="form-control form-control-sm" />
+            <div class="invalid-feedback" id="err-username"></div>
+          </div>
+
+          <div class="mb-2" id="wrap-active">
+            <div class="form-check">
+              <input id="user-active" class="form-check-input" type="checkbox" />
+              <label class="form-check-label" for="user-active">Active</label>
+            </div>
+          </div>
+
+          <div class="mb-2">
+            <div class="small fw-semibold">Roles (schedule_ops_*)</div>
+            <div class="form-check">
+              <input id="role-app" class="form-check-input" type="checkbox" />
+              <label class="form-check-label" for="role-app">app_operator</label>
+            </div>
+            <div class="form-check">
+              <input id="role-admin" class="form-check-input" type="checkbox" />
+              <label class="form-check-label" for="role-admin">ops_admin</label>
+            </div>
+            <div class="form-check">
+              <input id="role-super" class="form-check-input" type="checkbox" />
+              <label class="form-check-label" for="role-super">superuser</label>
+            </div>
+          </div>
+
+          <div class="mb-2">
+            <label class="form-label">Password (optional)</label>
+            <input id="user-password" type="password" class="form-control form-control-sm" placeholder="blank = no change" />
+            <div class="form-text">新規作成時は必須。編集時は空なら変更しません。</div>
+            <div class="invalid-feedback" id="err-password"></div>
+          </div>
+
+          <div class="alert alert-warning py-2 px-3 small mb-0 d-none" id="user-warn"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+          <button id="btn-save" type="button" class="btn btn-primary btn-sm">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal fade" id="modal-user-delete" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Delete user</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="alert alert-danger py-2 px-3 small mb-2">
+            このユーザを削除します。自分自身は削除できません。
+          </div>
+          <div class="small text-body-secondary">対象:</div>
+          <div class="fw-semibold" id="delete-user-label">—</div>
+          <input type="hidden" id="delete-user-id" />
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button id="btn-delete-confirm" type="button" class="btn btn-danger btn-sm">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const notyf = new Notyf({ duration: 2500 });
+
+  function getCookie(name) {
+    const value = `; ${document.cookie}`;
+    const parts = value.split(`; ${name}=`);
+    if (parts.length === 2) return parts.pop().split(';').shift();
+    return '';
+  }
+
+  function formatShortDatetime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso);
+    return d.toLocaleString('ja-JP', { hour12: false });
+  }
+
+  const tableEl = document.getElementById('users-table');
+  const btnCreate = document.getElementById('btn-create');
+
+  const modalEl = document.getElementById('modal-user');
+  const modal = modalEl ? new bootstrap.Modal(modalEl) : null;
+
+  const deleteModalEl = document.getElementById('modal-user-delete');
+  const deleteModal = deleteModalEl ? new bootstrap.Modal(deleteModalEl) : null;
+  const deleteUserIdEl = document.getElementById('delete-user-id');
+  const deleteUserLabelEl = document.getElementById('delete-user-label');
+  const btnDeleteConfirm = document.getElementById('btn-delete-confirm');
+
+  const modalTitleEl = document.getElementById('modal-title');
+  const usernameEl = document.getElementById('user-username');
+  const activeEl = document.getElementById('user-active');
+  const passwordEl = document.getElementById('user-password');
+
+  const roleAppEl = document.getElementById('role-app');
+  const roleAdminEl = document.getElementById('role-admin');
+  const roleSuperEl = document.getElementById('role-super');
+
+  const btnSave = document.getElementById('btn-save');
+  const errUsernameEl = document.getElementById('err-username');
+  const errPasswordEl = document.getElementById('err-password');
+  const warnEl = document.getElementById('user-warn');
+
+  let dt = null;
+  let lastUsersById = {};
+  let currentMode = 'create';
+  let currentUserId = null;
+
+  function resetErrors() {
+    usernameEl.classList.remove('is-invalid');
+    passwordEl.classList.remove('is-invalid');
+    errUsernameEl.textContent = '';
+    errPasswordEl.textContent = '';
+    warnEl.classList.add('d-none');
+    warnEl.textContent = '';
+  }
+
+  function rolesFromForm() {
+    return {
+      app_operator: !!roleAppEl.checked,
+      ops_admin: !!roleAdminEl.checked,
+      superuser: !!roleSuperEl.checked,
+    };
+  }
+
+  function setFormFromUser(u) {
+    usernameEl.value = u ? (u.username || '') : '';
+    activeEl.checked = u ? !!u.is_active : true;
+
+    const roles = u ? (u.ops_roles || {}) : {};
+    roleAppEl.checked = !!roles.app_operator;
+    roleAdminEl.checked = !!roles.ops_admin;
+    roleSuperEl.checked = !!roles.superuser;
+
+    passwordEl.value = '';
+  }
+
+  function openCreate() {
+    currentMode = 'create';
+    currentUserId = null;
+    modalTitleEl.textContent = 'Create user';
+    usernameEl.readOnly = false;
+    setFormFromUser(null);
+    resetErrors();
+    modal && modal.show();
+  }
+
+  function openEdit(userId) {
+    const u = lastUsersById[String(userId)];
+    if (!u) return;
+    currentMode = 'edit';
+    currentUserId = u.id;
+    modalTitleEl.textContent = `Edit user #${u.id}`;
+    usernameEl.readOnly = true;
+    setFormFromUser(u);
+    resetErrors();
+    modal && modal.show();
+  }
+
+  function upsertTable(users) {
+    lastUsersById = {};
+    for (const u of users) lastUsersById[String(u.id)] = u;
+
+    const rows = users.map(u => {
+      const roles = [];
+      if (u.ops_roles && u.ops_roles.superuser) roles.push('superuser');
+      if (u.ops_roles && u.ops_roles.ops_admin) roles.push('ops_admin');
+      if (u.ops_roles && u.ops_roles.app_operator) roles.push('app_operator');
+      const actions = `
+        <div class="btn-group btn-group-sm" role="group">
+          <button class="btn btn-outline-primary" data-action="edit" data-id="${u.id}">Edit</button>
+          <button class="btn btn-outline-danger" data-action="delete" data-id="${u.id}">Delete</button>
+        </div>
+      `;
+      return [u.id, u.username, u.is_active ? 'Y' : 'N', roles.join(', '), formatShortDatetime(u.last_login), actions];
+    });
+
+    if (!dt) {
+      dt = new DataTable(tableEl, {
+        data: rows,
+        columns: [
+          { title: 'id', width: '70px' },
+          { title: 'username' },
+          { title: 'active', width: '70px' },
+          { title: 'roles' },
+          { title: 'last_login', width: '170px' },
+          { title: 'Actions', orderable: false, searchable: false, width: '150px' },
+        ],
+        pageLength: 25,
+        order: [[0, 'asc']],
+      });
+    } else {
+      dt.clear();
+      dt.rows.add(rows);
+      dt.draw(false);
+    }
+  }
+
+  async function fetchUsers() {
+    const resp = await fetch('{% url "scheduler_ops:api_users" %}', { credentials: 'same-origin' });
+    if (!resp.ok) throw new Error('fetch failed');
+    return await resp.json();
+  }
+
+  async function refresh() {
+    const data = await fetchUsers();
+    if (!data.ok) throw new Error('api not ok');
+    upsertTable(data.users || []);
+    return { server_time: data.server_time };
+  }
+
+  window.schedulerOpsRefresh = refresh;
+
+  btnCreate.addEventListener('click', openCreate);
+
+  tableEl.addEventListener('click', function (ev) {
+    const btn = ev.target.closest('button');
+    if (!btn) return;
+    const action = btn.getAttribute('data-action');
+    const id = btn.getAttribute('data-id');
+    if (action === 'edit' && id) openEdit(id);
+    if (action === 'delete' && id) openDelete(id);
+  });
+
+  function openDelete(userId) {
+    const u = lastUsersById[String(userId)];
+    if (!u) return;
+    if (deleteUserIdEl) deleteUserIdEl.value = String(u.id);
+    if (deleteUserLabelEl) deleteUserLabelEl.textContent = `${u.username || ''} (#${u.id})`;
+    deleteModal && deleteModal.show();
+  }
+
+  async function deleteUser(userId) {
+    const url = '{% url "scheduler_ops:api_users_delete" 0 %}'.replace('/0/delete/', `/${userId}/delete/`);
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': getCookie('csrftoken'),
+      },
+      body: JSON.stringify({}),
+      credentials: 'same-origin',
+    });
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok || !data || !data.ok) {
+      const msg = (data && data.errors) ? data.errors.join('\n') : 'delete failed';
+      throw new Error(msg);
+    }
+    return data;
+  }
+
+  if (btnDeleteConfirm) {
+    btnDeleteConfirm.addEventListener('click', async function () {
+      const id = deleteUserIdEl ? String(deleteUserIdEl.value || '') : '';
+      if (!id) return;
+      try {
+        await deleteUser(id);
+        notyf.success('Deleted');
+        deleteModal && deleteModal.hide();
+        await refresh();
+      } catch (e) {
+        notyf.error(String(e && e.message ? e.message : e));
+      }
+    });
+  }
+
+  btnSave.addEventListener('click', async function () {
+    resetErrors();
+
+    const payload = {
+      username: String(usernameEl.value || '').trim(),
+      is_active: !!activeEl.checked,
+      roles: rolesFromForm(),
+      password: String(passwordEl.value || ''),
+    };
+
+    try {
+      let url = '';
+      if (currentMode === 'create') {
+        url = '{% url "scheduler_ops:api_users_create" %}';
+      } else {
+        url = '{% url "scheduler_ops:api_users_update" 0 %}'.replace('/0/', `/${currentUserId}/`);
+      }
+
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': getCookie('csrftoken'),
+        },
+        body: JSON.stringify(payload),
+        credentials: 'same-origin',
+      });
+
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        const errs = (data && data.errors) ? data.errors : ['request failed'];
+        const msg = errs.join('\n');
+        if (msg.toLowerCase().includes('username')) {
+          usernameEl.classList.add('is-invalid');
+          errUsernameEl.textContent = msg;
+        } else if (msg.toLowerCase().includes('password')) {
+          passwordEl.classList.add('is-invalid');
+          errPasswordEl.textContent = msg;
+        } else {
+          warnEl.classList.remove('d-none');
+          warnEl.textContent = msg;
+        }
+        return;
+      }
+
+      notyf.success('saved');
+      modal && modal.hide();
+      await refresh();
+    } catch (e) {
+      notyf.error('save failed');
+    }
+  });
+
+  refresh().catch(() => notyf.error('initial load failed'));
+})();
+</script>
+{% endblock %}

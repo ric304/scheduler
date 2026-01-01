@@ -1,0 +1,13 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: "scheduler-webhook"
+
+receivers:
+  - name: "null"
+
+  - name: "scheduler-webhook"
+    webhook_configs:
+      - url: "http://host.docker.internal:8000/ops/api/alert-webhook/dev/"
+        send_resolved: true

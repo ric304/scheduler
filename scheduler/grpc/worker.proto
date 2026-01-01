@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+package scheduler.v1;
+
+service WorkerService {
+  rpc Ping(PingRequest) returns (PingResponse);
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+
+  rpc StartJob(StartJobRequest) returns (StartJobResponse);
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+
+  rpc Drain(DrainRequest) returns (DrainResponse);
+
+  rpc ReloadConfig(ReloadConfigRequest) returns (ReloadConfigResponse);
+
+  rpc ConfirmContinuation(ConfirmContinuationRequest) returns (ConfirmContinuationResponse);
+}
+
+message PingRequest {
+  string caller_role = 1;
+  int64 leader_epoch = 2;
+}
+message PingResponse {
+  string worker_id = 1;
+  string node_id = 2;
+  int64 observed_leader_epoch = 3;
+  int64 now_unix_ms = 4;
+}
+
+message GetStatusRequest {
+  string caller_role = 1;
+  int64 leader_epoch = 2;
+}
+message GetStatusResponse {
+  string worker_id = 1;
+  string node_id = 2;
+  string role = 3;
+  bool detached = 4;
+  bool draining = 5;
+  int32 load = 6;
+  string current_job_run_id = 7;
+  int64 observed_leader_epoch = 8;
+  int64 last_heartbeat_unix_ms = 9;
+}
+
+message StartJobRequest {
+  int64 leader_epoch = 1;
+  string job_run_id = 2;
+
+  string command_name = 3;
+  string args_json = 4;
+
+  int32 timeout_seconds = 5;
+  int32 attempt = 6;
+}
+message StartJobResponse {
+  enum Result {
+    RESULT_UNSPECIFIED = 0;
+    ACCEPTED = 1;
+    REJECTED_OLD_EPOCH = 2;
+    REJECTED_DETACHED = 3;
+    REJECTED_DRAINING = 4;
+    REJECTED_ALREADY_RUNNING = 5;
+    REJECTED_INVALID = 6;
+  }
+  Result result = 1;
+  string message = 2;
+}
+
+message CancelJobRequest {
+  int64 leader_epoch = 1;
+  string job_run_id = 2;
+  string reason = 3;
+}
+message CancelJobResponse {
+  enum Result {
+    RESULT_UNSPECIFIED = 0;
+    ACCEPTED = 1;
+    REJECTED_OLD_EPOCH = 2;
+    NOT_FOUND = 3;
+    ALREADY_FINISHED = 4;
+  }
+  Result result = 1;
+  string message = 2;
+}
+
+message DrainRequest {
+  int64 leader_epoch = 1;
+  bool enable = 2;
+}
+message DrainResponse {
+  bool draining = 1;
+}
+
+message ReloadConfigRequest {
+  int64 leader_epoch = 1;
+  string requested_by = 2;
+}
+message ReloadConfigResponse {
+  bool ok = 1;
+  string message = 2;
+  int64 cache_generation = 3;
+}
+
+message ConfirmContinuationRequest {
+  int64 leader_epoch = 1;
+  string worker_id = 2;
+  string job_run_id = 3;
+}
+message ConfirmContinuationResponse {
+  enum Decision {
+    DECISION_UNSPECIFIED = 0;
+    ALLOW_CONTINUE = 1;
+    MUST_ABORT = 2;
+  }
+  Decision decision = 1;
+  string message = 2;
+}

@@ -144,6 +144,13 @@
 
 MVPでは「CDNでも可」だが、本番/閉域を想定するなら static 同梱を推奨。
 
+## 10.1 設定値（SCHEDULER_*）の扱い
+
+- 運用/表示に関わる設定値（例: `SCHEDULER_PROMETHEUS_URL`）は、原則 **Ops の Settings メニューで編集**し、DB（`SchedulerSetting`）の上書きを使う。
+- UI機能追加のために `.env` / 環境変数の追加を必須にしない（開発者ごとの設定差で画面が再現できなくなるため）。
+- 新しい設定キーを追加する場合は、Settings 画面に出るよう `SchedulerSettingHelp`（help seed）へ定義を追加する。
+- 例外: `_NON_OVERRIDABLE_KEYS`（例: `SCHEDULER_NODE_ID`）のように「プロセス/環境に結びつく値」はDBで上書きしない。
+
 ## 11. チェックリスト（PR時）
 
 - 一覧はDataTablesでPaging/検索/ソートが有効
@@ -151,3 +158,4 @@ MVPでは「CDNでも可」だが、本番/閉域を想定するなら static �
 - 判断不要の通知はNotyfで自動クローズ
 - 危険操作は確認モーダルあり
 - Bootstrapの標準クラスを使い、独自CSSが肥大化していない
+- バックログ化した項目がある場合、[docs/roadmap.md](docs/roadmap.md) に追記済み
