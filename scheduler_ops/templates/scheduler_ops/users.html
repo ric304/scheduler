@@ -1,13 +1,13 @@
 {% extends 'scheduler_ops/base.html' %}
 
-{% block title %}Users | Scheduler Ops{% endblock %}
+{% block title %}Users | Scheduler OPS{% endblock %}
 
 {% block page_title %}Users{% endblock %}
 
 {% block content %}
   <div class="d-flex align-items-center gap-2 mb-3">
-    <button id="btn-create" class="btn btn-primary btn-sm">Create user</button>
-    <div class="text-body-secondary small" id="users-hint">スーパーユーザのみ（ユーザ追加/ロール付与）</div>
+    <button id="btn-create" class="btn btn-outline-primary btn-sm">Create user</button>
+    <div class="text-body-secondary small" id="users-hint">新規ユーザ追加/ロール付与</div>
   </div>
 
   <div class="card">
@@ -216,13 +216,16 @@
       if (u.ops_roles && u.ops_roles.superuser) roles.push('superuser');
       if (u.ops_roles && u.ops_roles.ops_admin) roles.push('ops_admin');
       if (u.ops_roles && u.ops_roles.app_operator) roles.push('app_operator');
+      const activeHtml = u.is_active
+        ? '<span class="badge text-bg-success">ON</span>'
+        : '<span class="badge text-bg-secondary">OFF</span>';
       const actions = `
         <div class="btn-group btn-group-sm" role="group">
           <button class="btn btn-outline-primary" data-action="edit" data-id="${u.id}">Edit</button>
           <button class="btn btn-outline-danger" data-action="delete" data-id="${u.id}">Delete</button>
         </div>
       `;
-      return [u.id, u.username, u.is_active ? 'Y' : 'N', roles.join(', '), formatShortDatetime(u.last_login), actions];
+      return [u.id, u.username, activeHtml, roles.join(', '), formatShortDatetime(u.last_login), actions];
     });
 
     if (!dt) {

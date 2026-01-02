@@ -1,7 +1,7 @@
 {% extends "scheduler_ops/base.html" %}
 {% load scheduler_ops_roles %}
 
-{% block title %}Ops - Home{% endblock %}
+{% block title %}Dashboard | Scheduler OPS{% endblock %}
 
 {% block page_title %}Dashboard{% endblock %}
 
@@ -37,17 +37,17 @@
                   <span id="ops-health-redis-detail" class="ms-2 text-body-secondary small"></span>
                 </div>
                 <div class="px-2 py-1 border rounded bg-body">
-                  <span class="text-body-secondary small">Prometheus</span>
+                  <a id="ops-link-prometheus" class="text-body-secondary small" href="#" target="_blank" rel="noopener">Prometheus</a>
                   <span id="ops-health-prometheus" class="ms-2 fw-semibold">—</span>
                   <span id="ops-health-prometheus-detail" class="ms-2 text-body-secondary small"></span>
                 </div>
                 <div class="px-2 py-1 border rounded bg-body">
-                  <span class="text-body-secondary small">Alertmanager</span>
+                  <a id="ops-link-alertmanager" class="text-body-secondary small" href="#" target="_blank" rel="noopener">Alertmanager</a>
                   <span id="ops-health-alertmanager" class="ms-2 fw-semibold">—</span>
                   <span id="ops-health-alertmanager-detail" class="ms-2 text-body-secondary small"></span>
                 </div>
                 <div class="px-2 py-1 border rounded bg-body">
-                  <span class="text-body-secondary small">Object Storage</span>
+                  <a id="ops-link-object" class="text-body-secondary small" href="#" target="_blank" rel="noopener">Object Storage</a>
                   <span id="ops-health-object" class="ms-2 fw-semibold">—</span>
                   <span id="ops-health-object-detail" class="ms-2 text-body-secondary small"></span>
                 </div>
@@ -200,7 +200,7 @@
             <h2 class="h6 mb-0">System Load</h2>
             <div class="d-flex align-items-center gap-2">
               <a class="btn btn-sm btn-outline-secondary" href="{% url 'scheduler_ops:job_runs' %}">JobRuns</a>
-              <span class="badge text-bg-secondary">Prometheus</span>
+              <span class="badge text-bg-secondary">JobRuns</span>
             </div>
           </div>
 
@@ -220,23 +220,23 @@
                 <div id="ops-wsum-load" class="fw-semibold">—</div>
               </div>
               <div>
-                <div class="text-body-secondary small">succeeded (5m)</div>
+                <div class="text-body-secondary small">succeeded (<span class="ops-recent-window">—</span>)</div>
                 <div id="ops-wsum-succeeded" class="fw-semibold">—</div>
               </div>
               <div>
-                <div class="text-body-secondary small">failed (5m)</div>
+                <div class="text-body-secondary small">failed (<span class="ops-recent-window">—</span>)</div>
                 <div id="ops-wsum-failed" class="fw-semibold">—</div>
               </div>
               <div>
-                <div class="text-body-secondary small">canceled (5m)</div>
+                <div class="text-body-secondary small">canceled (<span class="ops-recent-window">—</span>)</div>
                 <div id="ops-wsum-canceled" class="fw-semibold">—</div>
               </div>
               <div>
-                <div class="text-body-secondary small">timed out (5m)</div>
+                <div class="text-body-secondary small">timed out (<span class="ops-recent-window">—</span>)</div>
                 <div id="ops-wsum-timedout" class="fw-semibold">—</div>
               </div>
               <div>
-                <div class="text-body-secondary small">skipped (5m)</div>
+                <div class="text-body-secondary small">skipped (<span class="ops-recent-window">—</span>)</div>
                 <div id="ops-wsum-skipped" class="fw-semibold">—</div>
               </div>
             </div>
@@ -245,36 +245,46 @@
           <div class="row g-3 mt-1">
             <div class="col-6">
               <div class="p-3 border rounded bg-body">
-                <div class="text-body-secondary small">CPU (5m) cores</div>
+                <div class="text-body-secondary small">CPU (<span class="ops-recent-window">—</span>) cores</div>
                 <div id="ops-load-cpu" class="fs-4 fw-semibold">—</div>
                 <svg id="ops-spark-cpu" viewBox="0 0 100 24" preserveAspectRatio="none" class="w-100" style="height: 28px;"></svg>
               </div>
             </div>
             <div class="col-6">
               <div class="p-3 border rounded bg-body">
-                <div class="text-body-secondary small">Mem p95 (5m)</div>
+                <div class="text-body-secondary small">Mem p95 (<span class="ops-recent-window">—</span>)</div>
                 <div id="ops-load-mem" class="fs-4 fw-semibold">—</div>
                 <svg id="ops-spark-mem" viewBox="0 0 100 24" preserveAspectRatio="none" class="w-100" style="height: 28px;"></svg>
               </div>
             </div>
             <div class="col-6">
               <div class="p-3 border rounded bg-body">
-                <div class="text-body-secondary small">IO read (5m)</div>
+                <div class="text-body-secondary small">IO read (<span class="ops-recent-window">—</span>)</div>
                 <div id="ops-load-io-read" class="fs-4 fw-semibold">—</div>
+                <svg id="ops-spark-io-read" viewBox="0 0 100 24" preserveAspectRatio="none" class="w-100" style="height: 28px;"></svg>
               </div>
             </div>
             <div class="col-6">
               <div class="p-3 border rounded bg-body">
-                <div class="text-body-secondary small">IO write (5m)</div>
+                <div class="text-body-secondary small">IO write (<span class="ops-recent-window">—</span>)</div>
                 <div id="ops-load-io-write" class="fs-4 fw-semibold">—</div>
+                <svg id="ops-spark-io-write" viewBox="0 0 100 24" preserveAspectRatio="none" class="w-100" style="height: 28px;"></svg>
               </div>
             </div>
           </div>
 
           <hr class="my-4" />
           <div class="d-flex align-items-center justify-content-between">
-            <div class="text-body-secondary small">Top Workers (drilldown)</div>
-            <a class="btn btn-sm btn-outline-secondary" href="{% url 'scheduler_ops:workers' %}">Workers</a>
+            <div class="text-body-secondary small">Top Workers</div>
+            <div class="d-flex align-items-center gap-2">
+              <select id="ops-top-workers-window" class="form-select form-select-sm w-auto" aria-label="Top Workers window">
+                <option value="5">5m</option>
+                <option value="15" selected>15m</option>
+                <option value="30">30m</option>
+                <option value="60">60m</option>
+              </select>
+              <a class="btn btn-sm btn-outline-secondary" href="{% url 'scheduler_ops:workers' %}">Workers</a>
+            </div>
           </div>
           <div class="table-responsive mt-2">
             <table class="table table-sm table-striped mb-0">
@@ -286,7 +296,7 @@
                   <th class="text-end">score</th>
                   <th class="text-end">cpu</th>
                   <th class="text-end">mem</th>
-                  <th class="text-end">io</th>
+                  <th class="text-end">io(read/write)</th>
                   <th class="text-end">drilldown</th>
                 </tr>
               </thead>
@@ -532,7 +542,8 @@
         const h = 24;
         const pts = series.map((p, i) => {
           const x = (i / (series.length - 1)) * w;
-          const v = Number(p[1]);
+          let v = Number(p[1]);
+          if (!Number.isFinite(v)) v = min;
           const y = h - ((v - min) / range) * (h - 2) - 1;
           return `${x.toFixed(2)},${y.toFixed(2)}`;
         }).join(' ');
@@ -544,13 +555,41 @@
       }
 
       window.schedulerOpsRefresh = async function () {
-        const url = "{% url 'scheduler_ops:api_dashboard' %}?_=" + Date.now();
+        const windowSel = document.getElementById('ops-top-workers-window');
+        const recentMinutes = (windowSel && windowSel.value) ? String(windowSel.value) : '15';
+        const url = "{% url 'scheduler_ops:api_dashboard' %}?recent_minutes=" + encodeURIComponent(recentMinutes) + "&_=" + Date.now();
         const data = await (window.schedulerOpsGetJSON ? window.schedulerOpsGetJSON(url) : $.getJSON(url));
+
+        document.querySelectorAll('.ops-recent-window').forEach(el => {
+          el.textContent = String(recentMinutes) + 'm';
+        });
         if (activeWorkersEl) activeWorkersEl.textContent = String(data.active_workers ?? '—');
         if (leaderEpochEl) leaderEpochEl.textContent = String(data.leadership?.cluster_epoch ?? '—');
 
         // Health / connectivity
         const health = data.health || {};
+
+        function setLink(linkId, url) {
+          const el = document.getElementById(linkId);
+          if (!el) return;
+          const u = (url || '').trim();
+          if (!u) {
+            el.setAttribute('aria-disabled', 'true');
+            el.classList.add('pe-none');
+            el.removeAttribute('href');
+            el.tabIndex = -1;
+            return;
+          }
+          el.removeAttribute('aria-disabled');
+          el.classList.remove('pe-none');
+          el.href = u;
+          el.tabIndex = 0;
+        }
+
+        const links = data.links || {};
+        setLink('ops-link-prometheus', links.prometheus_url);
+        setLink('ops-link-alertmanager', links.alertmanager_url);
+        setLink('ops-link-object', links.object_storage_url);
         const onlineEl = document.getElementById('ops-health-online');
         const offlineSinceEl = document.getElementById('ops-health-offline-since');
         if (onlineEl) {
@@ -790,20 +829,25 @@
               const role = (w.is_leader ? 'leader' : (w.is_subleader ? 'subleader' : 'worker'));
               const score = Number(w.normalized_load ?? 0);
               const recent = w.recent || {};
+              const winSec = Number(recent.window_seconds ?? 0) || 0;
               const cpu = recent.cpu_seconds_total;
               const mem = recent.peak_rss_bytes_max;
               const ioR = recent.io_read_bytes_total;
               const ioW = recent.io_write_bytes_total;
               const jrUrl = "{% url 'scheduler_ops:job_runs' %}" + `?worker_id=${encodeURIComponent(wid)}`;
+
+              const cpuCores = (winSec > 0 && Number.isFinite(Number(cpu))) ? (Number(cpu) / winSec) : NaN;
+              const ioReadBps = (winSec > 0 && Number.isFinite(Number(ioR))) ? (Number(ioR) / winSec) : NaN;
+              const ioWriteBps = (winSec > 0 && Number.isFinite(Number(ioW))) ? (Number(ioW) / winSec) : NaN;
               return `
                 <tr>
                   <td class="font-monospace">${wid}</td>
                   <td class="font-monospace">${nodeId}</td>
                   <td>${role}</td>
                   <td class="text-end font-monospace">${score.toFixed(3)}</td>
-                  <td class="text-end font-monospace">${fmtSeconds(cpu)}</td>
+                  <td class="text-end font-monospace">${Number.isFinite(cpuCores) ? cpuCores.toFixed(2) : '—'}</td>
                   <td class="text-end font-monospace">${fmtBytes(mem)}</td>
-                  <td class="text-end font-monospace">${fmtBytes(ioR)} / ${fmtBytes(ioW)}</td>
+                  <td class="text-end font-monospace">${fmtRateBytesPerSec(ioReadBps)} / ${fmtRateBytesPerSec(ioWriteBps)}</td>
                   <td class="text-end"><a class="btn btn-sm btn-outline-light" href="${jrUrl}">JobRuns</a></td>
                 </tr>
               `;
@@ -811,13 +855,12 @@
           }
         }
 
-        const p = data.prometheus || {};
-        const finished = p.finished_5m || {};
+        const sl = data.system_load || {};
+        const finished = sl.finished_counts || {};
 
         // (Job Metrics card removed)
         function setFinished(el, key) {
           if (!el) return;
-          if (!p.enabled) { el.textContent = '—'; return; }
           const v = Number(finished?.[key] ?? 0);
           el.textContent = Number.isFinite(v) ? v.toFixed(0) : '0';
         }
@@ -828,19 +871,21 @@
         setFinished(wsumSkipEl, 'SKIPPED');
 
         // Overall load
-        const load = p.load || {};
         const cpuEl = document.getElementById('ops-load-cpu');
         const memEl = document.getElementById('ops-load-mem');
         const ioReadEl = document.getElementById('ops-load-io-read');
         const ioWriteEl = document.getElementById('ops-load-io-write');
-        if (cpuEl) cpuEl.textContent = p.enabled && load.cpu_cores_5m != null ? Number(load.cpu_cores_5m).toFixed(2) : '—';
-        if (memEl) memEl.textContent = p.enabled && load.mem_p95_bytes_5m != null ? fmtBytes(load.mem_p95_bytes_5m) : '—';
-        if (ioReadEl) ioReadEl.textContent = p.enabled && load.io_read_bps_5m != null ? fmtRateBytesPerSec(load.io_read_bps_5m) : '—';
-        if (ioWriteEl) ioWriteEl.textContent = p.enabled && load.io_write_bps_5m != null ? fmtRateBytesPerSec(load.io_write_bps_5m) : '—';
+        if (cpuEl) cpuEl.textContent = sl.cpu_cores_avg != null ? Number(sl.cpu_cores_avg).toFixed(2) : '—';
+        if (memEl) memEl.textContent = sl.mem_p95_bytes != null ? fmtBytes(sl.mem_p95_bytes) : '—';
+        if (ioReadEl) ioReadEl.textContent = sl.io_read_bps != null ? fmtRateBytesPerSec(sl.io_read_bps) : '—';
+        if (ioWriteEl) ioWriteEl.textContent = sl.io_write_bps != null ? fmtRateBytesPerSec(sl.io_write_bps) : '—';
 
-        const sp = p.sparklines || {};
-        renderSpark(document.getElementById('ops-spark-cpu'), sp.cpu_cores_5m);
-        renderSpark(document.getElementById('ops-spark-mem'), sp.mem_p95_bytes_5m);
+        // DB-backed load sparklines (past 30m, 1m buckets).
+        const sparks = sl.sparklines || {};
+        renderSpark(document.getElementById('ops-spark-cpu'), Array.isArray(sparks.cpu_cores) ? sparks.cpu_cores : []);
+        renderSpark(document.getElementById('ops-spark-mem'), Array.isArray(sparks.mem_p95_bytes) ? sparks.mem_p95_bytes : []);
+        renderSpark(document.getElementById('ops-spark-io-read'), Array.isArray(sparks.io_read_bps) ? sparks.io_read_bps : []);
+        renderSpark(document.getElementById('ops-spark-io-write'), Array.isArray(sparks.io_write_bps) ? sparks.io_write_bps : []);
         return { server_time: data.server_time };
       };
 
@@ -962,6 +1007,23 @@
           });
         }
       }
+
+      (function bindTopWorkersWindow() {
+        const sel = document.getElementById('ops-top-workers-window');
+        if (!sel) return;
+        try {
+          const saved = localStorage.getItem('ops_top_workers_recent_minutes');
+          if (saved && ['5', '15', '30', '60'].includes(String(saved))) {
+            sel.value = String(saved);
+          }
+        } catch {
+          // ignore
+        }
+        sel.addEventListener('change', function () {
+          try { localStorage.setItem('ops_top_workers_recent_minutes', String(sel.value || '15')); } catch { /* ignore */ }
+          if (window.schedulerOpsRefresh) window.schedulerOpsRefresh();
+        });
+      })();
 
       // Bind once on load
       bindSettingEditors();

@@ -151,6 +151,7 @@ def run_leader_tick_snapshot(
     redis_url: str,
     leader_epoch: int,
     assign_ahead_seconds: int,
+    skip_late_runs_after_seconds: int,
     reassign_assigned_after_seconds: int,
     continuation_confirm_seconds: int,
     assign_weight_leader: int,
@@ -185,6 +186,46 @@ def run_leader_tick_snapshot(
 
     with transaction.atomic():
         enabled_defs = JobDefinition.objects.filter(enabled=True).count()
+
+        # Backlog protection: skip stale runs that are too old to execute.
+        # Intended to prevent a large burst after long downtime.
+        skip_late_runs_after_seconds = max(0, int(skip_late_runs_after_seconds))
+        if skip_late_runs_after_seconds > 0:
+            cutoff = now - timedelta(seconds=int(skip_late_runs_after_seconds))
+            stale = (
+                JobRun.objects.select_for_update(skip_locked=True)
+                .filter(
+                    state__in=[JobRun.State.PENDING, JobRun.State.ORPHANED, JobRun.State.ASSIGNED],
+                    started_at__isnull=True,
+                    scheduled_for__isnull=False,
+                    scheduled_for__lt=cutoff,
+                )
+                .order_by("scheduled_for", "id")[:500]
+            )
+            for jr in stale:
+                jr.state = JobRun.State.SKIPPED
+                jr.finished_at = now
+                jr.error_summary = (
+                    (jr.error_summary + "\n" if jr.error_summary else "")
+                    + f"skipped: scheduled_for too old (scheduled_for={jr.scheduled_for.isoformat()} cutoff={cutoff.isoformat()})"
+                )
+                # Clear assignment to avoid confusing "assigned" remnants.
+                jr.assigned_worker_id = ""
+                jr.assigned_at = None
+                jr.leader_epoch = int(leader_epoch)
+                jr.version = int(jr.version) + 1
+                jr.save(
+                    update_fields=[
+                        "state",
+                        "finished_at",
+                        "error_summary",
+                        "assigned_worker_id",
+                        "assigned_at",
+                        "leader_epoch",
+                        "version",
+                        "updated_at",
+                    ]
+                )
 
         # M5 MVP: orphan/reassign when assigned worker is not active
         reassign_assigned_after_seconds = max(1, int(reassign_assigned_after_seconds))
@@ -409,6 +450,9 @@ def run_leader_tick_snapshot(
                 )
                 .order_by("scheduled_for", "id")
             )
+
+            # Keep leader tick cheap even if backlog is large.
+            pending = pending[:500]
 
             for jr in pending:
                 is_reassign = jr.state == JobRun.State.ORPHANED

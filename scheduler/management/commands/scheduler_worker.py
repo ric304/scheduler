@@ -184,6 +184,16 @@ class Command(BaseCommand):
         last_leader_reconcile_at = 0.0
         last_leader_reload_at = 0.0
 
+        # Pipeline knobs (keep the main loop responsive).
+        leader_ping_batch_size = 2
+        leader_dispatch_rpc_budget = 5
+        leader_dispatch_time_budget_seconds = 0.3
+        leader_reconcile_worker_batch_size = 2
+        leader_reconcile_jobrun_batch_size = 50
+
+        ping_cursor = 0
+        reconcile_cursor = 0
+
         # Coordination tick must remain cheap and frequent (docs/architecture.md).
         # Leader work (DB / RPC) can be heavy; run tick in a dedicated thread so
         # heartbeat / lock TTLs don't expire and cause role flapping.
@@ -371,6 +381,13 @@ class Command(BaseCommand):
                 # Note: some settings still require process restart to take full effect.
                 cfg = get_scheduler_config()
 
+                # Keep pipeline knobs in sync (safe to update at runtime).
+                try:
+                    leader_ping_batch_size = int(getattr(cfg, "leader_ping_batch_size", 2) or 2)
+                except Exception:
+                    leader_ping_batch_size = 2
+                leader_ping_batch_size = max(1, min(50, int(leader_ping_batch_size)))
+
                 with status_lock:
                     status = latest_status
 
@@ -384,6 +401,7 @@ class Command(BaseCommand):
                         redis_url=cfg.redis_url,
                         leader_epoch=effective_epoch,
                         assign_ahead_seconds=int(cfg.assign_ahead_seconds),
+                        skip_late_runs_after_seconds=int(cfg.skip_late_runs_after_seconds),
                         reassign_assigned_after_seconds=int(cfg.reassign_assigned_after_seconds),
                         continuation_confirm_seconds=int(cfg.continuation_confirm_seconds),
                         assign_weight_leader=int(cfg.assign_weight_leader),
@@ -438,10 +456,17 @@ class Command(BaseCommand):
                             assigned_worker_id__isnull=False,
                         )
                         .exclude(assigned_worker_id="")
-                        .order_by("scheduled_for", "id")[:50]
+                        .order_by("scheduled_for", "id")[:20]
                     )
 
+                    dispatch_deadline = time.time() + float(leader_dispatch_time_budget_seconds)
+                    rpc_calls = 0
                     for jr in assigned:
+                        if rpc_calls >= int(leader_dispatch_rpc_budget):
+                            break
+                        if time.time() >= dispatch_deadline:
+                            break
+
                         target = targets.get(jr.assigned_worker_id)
                         if not target:
                             continue
@@ -474,6 +499,7 @@ class Command(BaseCommand):
 
                         jd = jr.job_definition
                         try:
+                            rpc_calls += 1
                             resp = start_job_on_worker(
                                 target=target,
                                 leader_epoch=effective_epoch,
@@ -573,12 +599,34 @@ class Command(BaseCommand):
 
                 # M2: leader pings all known workers
                 if status.is_leader and (time.time() - last_leader_ping_at) >= max(1.0, interval_seconds):
-                    workers = list_workers(cfg.redis_url)
+                    workers = [
+                        w
+                        for w in list_workers(cfg.redis_url)
+                        if w.grpc_host and w.grpc_port and w.heartbeat_ttl_seconds > 0
+                    ]
+                    # Ensure stable ordering so round-robin is fair across ticks.
+                    workers.sort(key=lambda w: str(w.worker_id or ""))
                     ok_count = 0
                     err_count = 0
-                    for w in workers:
-                        if not w.grpc_host or not w.grpc_port:
-                            continue
+                    ok_worker_ids: list[str] = []
+                    err_worker_ids: list[str] = []
+                    checked_worker_ids: list[str] = []
+
+                    total = len(workers)
+                    if total > 0:
+                        bs = max(1, min(50, int(leader_ping_batch_size)))
+                        start = int(ping_cursor) % total
+                        batch = workers[start : start + bs]
+                        if len(batch) < bs:
+                            batch = batch + workers[0 : (bs - len(batch))]
+                        ping_cursor = (start + bs) % total
+                    else:
+                        batch = []
+
+                    for w in batch:
+                        wid = str(w.worker_id or "")
+                        if wid:
+                            checked_worker_ids.append(wid)
                         target = f"{w.grpc_host}:{w.grpc_port}"
                         try:
                             resp = ping_worker(
@@ -590,26 +638,62 @@ class Command(BaseCommand):
                                 timeout_seconds=0.5,
                             )
                             ok_count += 1
+                            if wid:
+                                ok_worker_ids.append(wid)
                         except Exception as e:
                             err_count += 1
-                            self.stdout.write(f"leader_ping target={target} error={type(e).__name__}")
+                            if wid:
+                                err_worker_ids.append(wid)
+                            self.stdout.write(
+                                f"leader_ping worker_id={wid or '-'} target={target} error={type(e).__name__}"
+                            )
 
                     # Success logs are intentionally throttled to avoid blocking stdout,
                     # which can starve coordination tick and cause TTL expiration.
                     now_ts = time.time()
                     if err_count > 0 or (now_ts - last_leader_ping_summary_at) >= 15.0:
-                        self.stdout.write(f"leader_ping summary ok={ok_count} error={err_count}")
+                        checked_s = ",".join(checked_worker_ids) if checked_worker_ids else ""
+                        ok_s = ",".join(ok_worker_ids) if ok_worker_ids else ""
+                        err_s = ",".join(err_worker_ids) if err_worker_ids else ""
+                        self.stdout.write(
+                            "leader_ping summary "
+                            + " ".join(
+                                [
+                                    f"ok={ok_count}",
+                                    f"error={err_count}",
+                                    f"batch={len(batch)}/{total}",
+                                    f"checked_worker_ids={checked_s}",
+                                    f"ok_worker_ids={ok_s}",
+                                    f"error_worker_ids={err_s}",
+                                ]
+                            )
+                        )
                         last_leader_ping_summary_at = now_ts
                     last_leader_ping_at = time.time()
 
                 # Reconcile: DB says RUNNING, but worker reports no current job (common after worker restart).
                 if status.is_leader and (time.time() - last_leader_reconcile_at) >= max(1.0, interval_seconds):
                     effective_epoch = int(status.leader_epoch or status.cluster_epoch or 0)
-                    workers = list_workers(cfg.redis_url)
+                    workers = [
+                        w
+                        for w in list_workers(cfg.redis_url)
+                        if w.grpc_host and w.grpc_port and w.heartbeat_ttl_seconds > 0
+                    ]
+                    total_workers = len(workers)
+                    if total_workers > 0:
+                        bs = max(1, int(leader_reconcile_worker_batch_size))
+                        start = int(reconcile_cursor) % total_workers
+                        batch = workers[start : start + bs]
+                        if len(batch) < bs:
+                            batch = batch + workers[0 : (bs - len(batch))]
+                        reconcile_cursor = (start + bs) % total_workers
+                    else:
+                        batch = []
+
                     targets = {
                         w.worker_id: f"{w.grpc_host}:{w.grpc_port}"
-                        for w in workers
-                        if w.grpc_host and w.grpc_port and w.heartbeat_ttl_seconds > 0
+                        for w in batch
+                        if w.worker_id
                     }
 
                     status_by_worker: dict[str, str] = {}
@@ -627,11 +711,11 @@ class Command(BaseCommand):
                             # If we can't query status, don't make a strong decision here.
                             continue
 
-                    # Check a small batch of RUNNING jobs.
+                    # Check a small batch of RUNNING jobs for the reconciled workers only.
                     running = (
-                        JobRun.objects.filter(state=JobRun.State.RUNNING)
+                        JobRun.objects.filter(state=JobRun.State.RUNNING, assigned_worker_id__in=list(targets.keys()))
                         .exclude(assigned_worker_id="")
-                        .order_by("started_at", "id")[:200]
+                        .order_by("started_at", "id")[: int(leader_reconcile_jobrun_batch_size)]
                     )
 
                     for jr in running:

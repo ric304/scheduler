@@ -153,6 +153,8 @@ class SchedulerRuntimeConfig:
     rebalance_assigned_max_per_tick: int
     rebalance_assigned_cooldown_seconds: int
 
+    leader_ping_batch_size: int
+
 
 def get_scheduler_config() -> SchedulerRuntimeConfig:
     return SchedulerRuntimeConfig(
@@ -177,4 +179,6 @@ def get_scheduler_config() -> SchedulerRuntimeConfig:
         rebalance_assigned_min_future_seconds=get_int(key="SCHEDULER_REBALANCE_ASSIGNED_MIN_FUTURE_SECONDS", default=30),
         rebalance_assigned_max_per_tick=get_int(key="SCHEDULER_REBALANCE_ASSIGNED_MAX_PER_TICK", default=50),
         rebalance_assigned_cooldown_seconds=get_int(key="SCHEDULER_REBALANCE_ASSIGNED_COOLDOWN_SECONDS", default=5),
+
+        leader_ping_batch_size=get_int(key="SCHEDULER_LEADER_PING_BATCH_SIZE", default=2),
     )

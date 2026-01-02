@@ -22,7 +22,9 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Max, Sum
+from django.db.models.functions import TruncMinute
 
 from scheduler.conf import (
     get_scheduler_config,
@@ -1191,10 +1193,33 @@ def _get_log_max_bytes(request) -> int:
 def _allowed_log_url_prefixes() -> list[str]:
     prefixes: list[str] = []
     base = get_str(key="SCHEDULER_LOG_ARCHIVE_PUBLIC_BASE_URL", default="").strip()
+    if not base:
+        base = get_str(key="SCHEDULER_LOG_ARCHIVE_S3_ENDPOINT_URL", default="").strip()
     if base:
         prefixes.append(base.rstrip("/") + "/")
         prefixes.append(base.rstrip("/"))
     return prefixes
+
+
+def _s3_ref_to_http_if_possible(ref: str) -> str | None:
+    # Stored log_ref can be either http(s), local path, or s3://bucket/key (legacy/default when PUBLIC_BASE_URL was blank).
+    # When PUBLIC_BASE_URL is blank, use S3_ENDPOINT_URL as the base so Ops UI can still fetch logs.
+    if not ref.startswith("s3://"):
+        return None
+    raw = ref[len("s3://") :]
+    if "/" not in raw:
+        return None
+    bucket, key = raw.split("/", 1)
+    bucket = (bucket or "").strip()
+    key = (key or "").lstrip("/")
+    if not bucket or not key:
+        return None
+    base = get_str(key="SCHEDULER_LOG_ARCHIVE_PUBLIC_BASE_URL", default="").strip() or get_str(
+        key="SCHEDULER_LOG_ARCHIVE_S3_ENDPOINT_URL", default=""
+    ).strip()
+    if not base:
+        return None
+    return f"{base.rstrip('/')}/{bucket}/{key}"
 
 
 def _is_allowed_log_url(url: str) -> bool:
@@ -1232,6 +1257,11 @@ def _read_log_bytes_from_ref(log_ref: str, max_bytes: int) -> tuple[bytes, bool,
     ref = (log_ref or "").strip()
     if not ref:
         return b"", False, "none", "no log_ref"
+
+    if ref.startswith("s3://"):
+        converted = _s3_ref_to_http_if_possible(ref)
+        if converted:
+            ref = converted
 
     if ref.startswith("http://") or ref.startswith("https://"):
         if not _is_allowed_log_url(ref):
@@ -1314,6 +1344,11 @@ def api_job_run_log_download(request, run_id: int):
     if not ref:
         return HttpResponse("no log_ref", status=400, content_type="text/plain; charset=utf-8")
 
+    if ref.startswith("s3://"):
+        converted = _s3_ref_to_http_if_possible(ref)
+        if converted:
+            ref = converted
+
     # Proxy allowed http(s) logs (e.g. MinIO) so browser always uses our download button.
     if ref.startswith("http://") or ref.startswith("https://"):
         if not _is_allowed_log_url(ref):
@@ -1360,6 +1395,18 @@ def api_dashboard(request):
     workers_list = list_workers(cfg.redis_url)
     active_workers = sum(1 for w in workers_list if w.heartbeat_ttl_seconds > 0)
 
+    # Recent window for per-worker summaries.
+    allowed_recent_minutes = {5, 15, 30, 60}
+    recent_minutes = 15
+    try:
+        raw = request.GET.get("recent_minutes")
+        if raw is not None and str(raw).strip() != "":
+            cand = int(str(raw).strip())
+            if cand in allowed_recent_minutes:
+                recent_minutes = cand
+    except Exception:
+        recent_minutes = 15
+
     # Worker-level load summary (DB-backed counts + Redis worker registry)
     assigned_counts = {
         row["assigned_worker_id"]: int(row["c"])
@@ -1378,7 +1425,7 @@ def api_dashboard(request):
 
     # Recent per-worker resource usage (best-effort; recorded at completion).
     # This is NOT "current" CPU/mem/IO, but it helps spot heavy workers.
-    recent_since = timezone.now() - timedelta(minutes=15)
+    recent_since = timezone.now() - timedelta(minutes=int(recent_minutes))
     terminal_states = [
         JobRun.State.SUCCEEDED,
         JobRun.State.FAILED,
@@ -1388,11 +1435,14 @@ def api_dashboard(request):
     ]
     recent_by_worker: dict[str, dict[str, object]] = {}
     try:
-        recent_rows = (
+        recent_qs = (
             JobRun.objects.filter(state__in=terminal_states)
-            .exclude(assigned_worker_id="")
             .exclude(finished_at=None)
             .filter(finished_at__gte=recent_since)
+        )
+
+        recent_rows = (
+            recent_qs.exclude(assigned_worker_id="")
             .values("assigned_worker_id")
             .annotate(
                 finished_count=Count("id"),
@@ -1415,6 +1465,168 @@ def api_dashboard(request):
             }
     except Exception:
         recent_by_worker = {}
+
+    # System Load (DB-backed): aggregate job-run performance over the same window.
+    # - CPU cores avg ~= cpu_seconds_total / window_seconds
+    # - IO read/write bps ~= bytes_total / window_seconds
+    # - mem p95 uses resource_peak_rss_bytes distribution (best-effort).
+    window_seconds = int(recent_minutes) * 60
+    finished_counts: dict[str, int] = {s: 0 for s in terminal_states}
+    load_payload: dict[str, object] = {
+        "window_seconds": window_seconds,
+        "cpu_cores_avg": None,
+        "io_read_bps": None,
+        "io_write_bps": None,
+        "mem_p95_bytes": None,
+        "finished_counts": {},
+    }
+    try:
+        # Use the same recent_qs when available.
+        recent_qs  # type: ignore[name-defined]
+    except Exception:
+        recent_qs = (
+            JobRun.objects.filter(state__in=terminal_states)
+            .exclude(finished_at=None)
+            .filter(finished_at__gte=recent_since)
+        )
+
+    try:
+        # Finished counts by state.
+        for row in recent_qs.values("state").annotate(c=Count("id")):
+            st = str(row.get("state") or "")
+            if st:
+                finished_counts[st] = int(row.get("c") or 0)
+
+        agg = recent_qs.aggregate(
+            cpu_seconds_total=Sum("resource_cpu_seconds_total"),
+            io_read_bytes_total=Sum("resource_io_read_bytes"),
+            io_write_bytes_total=Sum("resource_io_write_bytes"),
+        )
+        cpu_seconds_total = float(agg.get("cpu_seconds_total") or 0.0)
+        io_read_bytes_total = float(agg.get("io_read_bytes_total") or 0.0)
+        io_write_bytes_total = float(agg.get("io_write_bytes_total") or 0.0)
+
+        cpu_cores_avg = (cpu_seconds_total / float(window_seconds)) if window_seconds > 0 else None
+        io_read_bps = (io_read_bytes_total / float(window_seconds)) if window_seconds > 0 else None
+        io_write_bps = (io_write_bytes_total / float(window_seconds)) if window_seconds > 0 else None
+
+        # Mem p95 (best-effort; cap to avoid large payloads).
+        peaks = list(
+            recent_qs.exclude(resource_peak_rss_bytes=None)
+            .order_by("-finished_at")
+            .values_list("resource_peak_rss_bytes", flat=True)[:2000]
+        )
+        peaks_clean = [int(v) for v in peaks if v is not None]
+        mem_p95 = None
+        if peaks_clean:
+            peaks_clean.sort()
+            idx = int(round(0.95 * (len(peaks_clean) - 1)))
+            idx = max(0, min(idx, len(peaks_clean) - 1))
+            mem_p95 = int(peaks_clean[idx])
+
+        load_payload = {
+            "window_seconds": int(window_seconds),
+            "cpu_cores_avg": float(cpu_cores_avg) if cpu_cores_avg is not None else None,
+            "io_read_bps": float(io_read_bps) if io_read_bps is not None else None,
+            "io_write_bps": float(io_write_bps) if io_write_bps is not None else None,
+            "mem_p95_bytes": mem_p95,
+            "finished_counts": {k: int(v) for k, v in finished_counts.items()},
+        }
+    except Exception:
+        pass
+
+    # System Load sparklines (DB-backed): past 30 minutes, 1-minute buckets.
+    # Best-effort: we group completed job runs by finished_at minute.
+    try:
+        spark_minutes = 30
+        bucket_seconds = 60
+        end_bucket = timezone.now().replace(second=0, microsecond=0)
+        start_bucket = end_bucket - timedelta(minutes=spark_minutes - 1)
+        spark_until = end_bucket + timedelta(minutes=1)
+
+        spark_qs = (
+            JobRun.objects.filter(state__in=terminal_states)
+            .exclude(finished_at=None)
+            .filter(finished_at__gte=start_bucket, finished_at__lt=spark_until)
+        )
+
+        cpu_by_bucket: dict[object, float] = {}
+        for row in (
+            spark_qs.annotate(bucket=TruncMinute("finished_at"))
+            .values("bucket")
+            .annotate(cpu_seconds_total=Sum("resource_cpu_seconds_total"))
+        ):
+            b = row.get("bucket")
+            if b is None:
+                continue
+            cpu_by_bucket[b] = float(row.get("cpu_seconds_total") or 0.0)
+
+        io_by_bucket: dict[object, tuple[float, float]] = {}
+        for row in (
+            spark_qs.annotate(bucket=TruncMinute("finished_at"))
+            .values("bucket")
+            .annotate(
+                io_read_bytes_total=Sum("resource_io_read_bytes"),
+                io_write_bytes_total=Sum("resource_io_write_bytes"),
+            )
+        ):
+            b = row.get("bucket")
+            if b is None:
+                continue
+            io_by_bucket[b] = (
+                float(row.get("io_read_bytes_total") or 0.0),
+                float(row.get("io_write_bytes_total") or 0.0),
+            )
+
+        mem_values_by_bucket: dict[object, list[int]] = {}
+        mem_rows = list(
+            spark_qs.exclude(resource_peak_rss_bytes=None)
+            .annotate(bucket=TruncMinute("finished_at"))
+            .values_list("bucket", "resource_peak_rss_bytes")[:50000]
+        )
+        for b, v in mem_rows:
+            if b is None or v is None:
+                continue
+            mem_values_by_bucket.setdefault(b, []).append(int(v))
+
+        def _p95_int(values: list[int]) -> int | None:
+            if not values:
+                return None
+            values.sort()
+            idx = int(round(0.95 * (len(values) - 1)))
+            idx = max(0, min(idx, len(values) - 1))
+            return int(values[idx])
+
+        buckets = [start_bucket + timedelta(minutes=i) for i in range(spark_minutes)]
+        cpu_series = []
+        mem_series = []
+        io_read_series = []
+        io_write_series = []
+        for b in buckets:
+            cpu_seconds = float(cpu_by_bucket.get(b, 0.0))
+            cpu_cores = cpu_seconds / float(bucket_seconds) if bucket_seconds > 0 else None
+            cpu_series.append([b.isoformat(), float(cpu_cores) if cpu_cores is not None else None])
+
+            mem_p95_b = _p95_int(mem_values_by_bucket.get(b, []))
+            mem_series.append([b.isoformat(), int(mem_p95_b) if mem_p95_b is not None else None])
+
+            io_read_bytes, io_write_bytes = io_by_bucket.get(b, (0.0, 0.0))
+            io_read_bps = io_read_bytes / float(bucket_seconds) if bucket_seconds > 0 else None
+            io_write_bps = io_write_bytes / float(bucket_seconds) if bucket_seconds > 0 else None
+            io_read_series.append([b.isoformat(), float(io_read_bps) if io_read_bps is not None else None])
+            io_write_series.append([b.isoformat(), float(io_write_bps) if io_write_bps is not None else None])
+
+        load_payload["sparklines"] = {
+            "minutes": int(spark_minutes),
+            "bucket_seconds": int(bucket_seconds),
+            "cpu_cores": cpu_series,
+            "mem_p95_bytes": mem_series,
+            "io_read_bps": io_read_series,
+            "io_write_bps": io_write_series,
+        }
+    except Exception:
+        # Keep dashboard usable even if sparkline aggregation fails.
+        pass
 
     def _role_weight_for(w):
         if w.is_leader:
@@ -1452,7 +1664,7 @@ def api_dashboard(request):
                 "effective_load": effective,
                 "normalized_load": normalized,
                 "recent": {
-                    "window_seconds": 15 * 60,
+                    "window_seconds": int(recent_minutes) * 60,
                     "finished_count": recent.get("finished_count"),
                     "cpu_seconds_total": recent.get("cpu_seconds_total"),
                     "io_read_bytes_total": recent.get("io_read_bytes_total"),
@@ -1602,6 +1814,12 @@ def api_dashboard(request):
             offline_since = timezone.now().isoformat()
             _HEALTH_CACHE["offline_since"] = offline_since
     now = timezone.now()
+
+    # Service links (used by UI to link from health chips)
+    prom_base_url = get_str(key="SCHEDULER_PROMETHEUS_URL", default="", fresh=True).strip().rstrip("/")
+    obj_public_base_url = get_str(key="SCHEDULER_LOG_ARCHIVE_PUBLIC_BASE_URL", default="", fresh=True).strip().rstrip("/")
+    obj_endpoint_url = get_str(key="SCHEDULER_LOG_ARCHIVE_S3_ENDPOINT_URL", default="", fresh=True).strip().rstrip("/")
+    obj_effective_url = obj_public_base_url or obj_endpoint_url
     return JsonResponse(
         {
             "server_time": now.isoformat(),
@@ -1612,8 +1830,10 @@ def api_dashboard(request):
             },
             "workers": {
                 "totals": totals,
+                "recent_minutes": int(recent_minutes),
                 "top": worker_rows[:10],
             },
+            "system_load": load_payload,
             "health": {
                 "online": bool(online),
                 "offline_since": offline_since,
@@ -1628,6 +1848,11 @@ def api_dashboard(request):
                 "object_storage": obj_health,
                 "k8s_api": k8s_health,
                 "alertmanager": am_health,
+            },
+            "links": {
+                "prometheus_url": prom_base_url or None,
+                "alertmanager_url": am_url or None,
+                "object_storage_url": obj_effective_url or None,
             },
             "prometheus": prom,
             "alerts": alerts,
@@ -1876,6 +2101,109 @@ def api_job_run_detail(request, run_id: int):
                     "default_args_json": r.job_definition.default_args_json if r.job_definition_id else None,
                     "schedule": r.job_definition.schedule if r.job_definition_id else None,
                 },
+            },
+        }
+    )
+
+
+@login_required
+@_require_app_operator
+@require_POST
+def api_job_run_rerun(request, run_id: int):
+    now = timezone.now()
+    try:
+        r = (
+            JobRun.objects.select_related("job_definition")
+            .only(
+                "id",
+                "state",
+                "scheduled_for",
+                "job_definition__id",
+                "job_definition__name",
+            )
+            .get(id=run_id)
+        )
+    except JobRun.DoesNotExist:
+        return JsonResponse({"ok": False, "errors": ["job_run not found"], "server_time": now.isoformat()}, status=404)
+
+    if r.state != JobRun.State.SKIPPED:
+        return JsonResponse(
+            {
+                "ok": False,
+                "errors": ["only SKIPPED job_run can be re-run"],
+                "server_time": now.isoformat(),
+            },
+            status=400,
+        )
+
+    # Create a new JobRun scheduled for 'now' (with seconds/micros) so it is eligible
+    # for assignment immediately and won't collide with minute-slot schedules.
+    scheduled_for = timezone.now()
+    new_run: JobRun | None = None
+    with transaction.atomic():
+        for _ in range(10):
+            try:
+                new_run = JobRun.objects.create(
+                    job_definition_id=r.job_definition_id,
+                    scheduled_for=scheduled_for,
+                    state=JobRun.State.PENDING,
+                    attempt=0,
+                    assigned_worker_id="",
+                    error_summary="",
+                    log_ref="",
+                    idempotency_key="",
+                )
+                break
+            except IntegrityError:
+                scheduled_for = scheduled_for + timedelta(microseconds=1)
+
+    if not new_run:
+        return JsonResponse(
+            {
+                "ok": False,
+                "errors": ["failed to create new job_run"],
+                "server_time": now.isoformat(),
+            },
+            status=409,
+        )
+
+    AdminActionLog.objects.create(
+        actor=getattr(request.user, "username", "") or "",
+        action="job_run.rerun",
+        target=str(run_id),
+        payload_json={
+            "from_run_id": int(run_id),
+            "new_run_id": int(new_run.id),
+            "job_definition_id": int(r.job_definition_id),
+            "job_definition_name": (r.job_definition.name if r.job_definition_id else None),
+            "from_state": str(r.state),
+            "from_scheduled_for": (r.scheduled_for.isoformat() if r.scheduled_for else None),
+            "new_scheduled_for": (new_run.scheduled_for.isoformat() if new_run.scheduled_for else None),
+        },
+    )
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "server_time": now.isoformat(),
+            "new_run": {
+                "id": new_run.id,
+                "state": new_run.state,
+                "scheduled_for": new_run.scheduled_for.isoformat() if new_run.scheduled_for else None,
+                "job_definition_id": new_run.job_definition_id,
+                "job_definition_name": (r.job_definition.name if r.job_definition_id else None),
+                "job_definition_type": (r.job_definition.type if r.job_definition_id else None),
+                "job_definition_schedule": (r.job_definition.schedule if r.job_definition_id else None),
+                "attempt": new_run.attempt,
+                "assigned_worker_id": new_run.assigned_worker_id,
+                "started_at": new_run.started_at.isoformat() if new_run.started_at else None,
+                "finished_at": new_run.finished_at.isoformat() if new_run.finished_at else None,
+                "error_summary": new_run.error_summary,
+                "log_ref": new_run.log_ref,
+                "resource_cpu_seconds_total": new_run.resource_cpu_seconds_total,
+                "resource_peak_rss_bytes": new_run.resource_peak_rss_bytes,
+                "resource_io_read_bytes": new_run.resource_io_read_bytes,
+                "resource_io_write_bytes": new_run.resource_io_write_bytes,
             },
         }
     )

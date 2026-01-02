@@ -84,6 +84,7 @@
 - 操作:
   - Cancel（可能な状態のときのみ）
   - Reassign（ORPHANED等のとき）
+  - Re-run（SKIPPED のとき。新しい JobRun を作って再投入）
 
 log_ref の扱い:
 - 直近期間はDB内ログ（または同等の高速参照）を表示
@@ -170,6 +171,7 @@ MVPでは色をハードコードせず、以下のCSS変数でテーマ化す�
 - POST `/ops/leader/degrade` → degradeフラグ
 - POST `/ops/runs/<id>/cancel` → WorkerへgRPC Cancel + DB更新
 - POST `/ops/runs/<id>/reassign` → DB状態更新 + 再割当対象へ
+- POST `/ops/api/job-runs/<id>/rerun/` → SKIPPED JobRun を再投入（新規 JobRun 作成）
 
 すべて AdminActionLog に記録する。
 

@@ -107,20 +107,6 @@
                   <span>Workers</span>
                 </a>
               </li>
-              <li>
-                <a class="nav-link {% if current == 'settings' %}active{% endif %} d-flex align-items-center" href="{% url 'scheduler_ops:settings' %}">
-                  <i class="bi bi-gear me-2"></i>
-                  <span>Settings</span>
-                </a>
-              </li>
-            {% endif %}
-            {% if user|ops_is_super %}
-              <li>
-                <a class="nav-link {% if current == 'users' %}active{% endif %} d-flex align-items-center" href="{% url 'scheduler_ops:users' %}">
-                  <i class="bi bi-people me-2"></i>
-                  <span>Users</span>
-                </a>
-              </li>
             {% endif %}
             {% if user|ops_is_app %}
               <li>
@@ -136,15 +122,32 @@
                 </a>
               </li>
             {% endif %}
+            {% if user|ops_is_super %}
+              <li>
+                <a class="nav-link {% if current == 'users' %}active{% endif %} d-flex align-items-center" href="{% url 'scheduler_ops:users' %}">
+                  <i class="bi bi-people me-2"></i>
+                  <span>Users</span>
+                </a>
+              </li>
+            {% endif %}
+            {% if user|ops_is_admin %}
+              <li>
+                <a class="nav-link {% if current == 'settings' %}active{% endif %} d-flex align-items-center" href="{% url 'scheduler_ops:settings' %}">
+                  <i class="bi bi-gear me-2"></i>
+                  <span>Settings</span>
+                </a>
+              </li>
+            {% endif %}
+
           </ul>
           {% endwith %}
           <hr />
           <div class="d-flex align-items-center gap-2">
             {% if user.is_authenticated %}
               <div class="text-body-secondary small">{{ user.username }}</div>
-              <a class="btn btn-outline-secondary btn-sm ms-auto" href="{% url 'logout' %}">ログアウト</a>
+              <a class="btn btn-outline-secondary btn-sm ms-auto" href="{% url 'logout' %}">Logout</a>
             {% else %}
-              <a class="btn btn-outline-secondary btn-sm" href="{% url 'login' %}">ログイン</a>
+              <a class="btn btn-outline-secondary btn-sm" href="{% url 'login' %}">Login</a>
             {% endif %}
           </div>
         </div>
@@ -164,6 +167,10 @@
             <div class="d-flex align-items-center gap-2">
               <div class="text-body-secondary small">
                 Last updated: <span id="ops-last-updated">—</span>
+              </div>
+              <div id="ops-refresh-loading" class="text-body-secondary small" style="display:none;">
+                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                <span class="ms-1">Loading</span>
               </div>
               <div id="ops-refresh-error" class="text-warning small" style="display:none;"></div>
               <label for="ops-autorefresh-interval" class="form-label mb-0 text-body-secondary small">Auto refresh</label>
@@ -205,16 +212,42 @@
         const toggleBtn = document.getElementById('ops-autorefresh-toggle');
         const lastUpdatedEl = document.getElementById('ops-last-updated');
         const refreshErrorEl = document.getElementById('ops-refresh-error');
+        const loadingEl = document.getElementById('ops-refresh-loading');
         if (!intervalSelect || !toggleBtn) return;
 
         const storageKey = `scheduler_ops_autorefresh:${location.pathname}`;
         const defaults = { enabled: false, intervalSeconds: 5 };
 
         // Prefer fetch for JSON so dashboards don't depend on jQuery/CDN.
+        // Show a small loading indicator for slow requests (avoid flicker).
+        let _getJsonInFlight = 0;
+        let _loadingTimer = null;
+        function _setLoadingVisible(on) {
+          if (!loadingEl) return;
+          loadingEl.style.display = on ? '' : 'none';
+        }
         window.schedulerOpsGetJSON = async function (url) {
-          const res = await fetch(url, { credentials: 'same-origin' });
-          if (!res.ok) throw new Error('HTTP ' + res.status);
-          return await res.json();
+          _getJsonInFlight += 1;
+          if (_loadingTimer === null) {
+            _loadingTimer = setTimeout(function () {
+              _loadingTimer = null;
+              if (_getJsonInFlight > 0) _setLoadingVisible(true);
+            }, 200);
+          }
+          try {
+            const res = await fetch(url, { credentials: 'same-origin' });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return await res.json();
+          } finally {
+            _getJsonInFlight = Math.max(0, _getJsonInFlight - 1);
+            if (_getJsonInFlight === 0) {
+              if (_loadingTimer !== null) {
+                clearTimeout(_loadingTimer);
+                _loadingTimer = null;
+              }
+              _setLoadingVisible(false);
+            }
+          }
         };
 
         function loadState() {

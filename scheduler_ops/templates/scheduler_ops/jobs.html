@@ -1,6 +1,6 @@
 {% extends "scheduler_ops/base.html" %}
 
-{% block title %}Ops - Jobs{% endblock %}
+{% block title %}Jobs | Scheduler OPS{% endblock %}
 
 {% block page_title %}Jobs{% endblock %}
 
@@ -51,7 +51,7 @@
                 <td class="font-monospace">{{ j.updated_at|date:"Y-m-d H:i:s" }}</td>
                 <td>
                   <div class="btn-group btn-group-sm" role="group">
-                    <button type="button" class="btn btn-outline-secondary ops-job-edit" data-job-id="{{ j.id }}">Edit</button>
+                    <button type="button" class="btn btn-outline-primary ops-job-edit" data-job-id="{{ j.id }}">Edit</button>
                     <button type="button" class="btn btn-outline-light ops-job-dup" data-job-id="{{ j.id }}">Duplicate</button>
                     <button type="button" class="btn btn-outline-danger ops-job-del" data-job-id="{{ j.id }}">Delete</button>
                   </div>
@@ -247,7 +247,7 @@
           const enabledHtml = j.enabled
             ? '<span class="badge text-bg-success">ON</span>'
             : '<span class="badge text-bg-secondary">OFF</span>';
-          const editBtn = `<button type="button" class="btn btn-outline-secondary ops-job-edit" data-job-id="${j.id}">Edit</button>`;
+          const editBtn = `<button type="button" class="btn btn-outline-primary ops-job-edit" data-job-id="${j.id}">Edit</button>`;
           const dupBtn = `<button type="button" class="btn btn-outline-light ops-job-dup" data-job-id="${j.id}">Duplicate</button>`;
           const delBtn = `<button type="button" class="btn btn-outline-danger ops-job-del" data-job-id="${j.id}">Delete</button>`;
           return [

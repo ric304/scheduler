@@ -328,8 +328,8 @@
     "fields": {
       "key": "SCHEDULER_LOG_ARCHIVE_S3_ENDPOINT_URL",
       "title": "S3 endpoint URL",
-      "description": "S3互換エンドポイント（MinIO等）のURL。",
-      "impact": "誤るとアップロードに失敗します。",
+      "description": "S3互換エンドポイント（MinIO等）のURL（内部向け/接続先）。",
+      "impact": "誤るとアップロードに失敗します。PUBLIC_BASE_URL が未設定の場合、UI/ログ参照のベースURLとしても利用されます。",
       "editable": true,
       "input_type": "text",
       "enum_values_json": [],
@@ -396,8 +396,8 @@
     "fields": {
       "key": "SCHEDULER_LOG_ARCHIVE_PUBLIC_BASE_URL",
       "title": "Public base URL",
-      "description": "UIがlog_refをURL表示/取得するためのベースURL（allowlist対象）。",
-      "impact": "誤るとUIでログが読めません。公開する構成の場合は漏洩リスクに注意。",
+      "description": "UIがlog_refをURL表示/取得するためのベースURL（allowlist対象、外部向けURL）。未設定の場合は S3_ENDPOINT_URL を利用します。",
+      "impact": "誤るとUIでログが読めません。内部URLと外部URLを分けたい場合にのみ設定してください（同一URL運用なら未設定でOK）。公開する構成の場合は漏洩リスクに注意。",
       "editable": true,
       "input_type": "text",
       "enum_values_json": [],

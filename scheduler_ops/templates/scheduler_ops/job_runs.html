@@ -1,6 +1,6 @@
 {% extends "scheduler_ops/base.html" %}
 
-{% block title %}Ops - JobRuns{% endblock %}
+{% block title %}JobRuns | Scheduler OPS{% endblock %}
 
 {% block page_title %}JobRuns{% endblock %}
 
@@ -27,6 +27,7 @@
               <th>io_w</th>
               <th>log_ref</th>
               <th>error_summary</th>
+              <th>actions</th>
             </tr>
           </thead>
           <tbody>
@@ -62,6 +63,13 @@
                 <td class="font-monospace" style="max-width: 520px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
                   <span title="{{ r.error_summary|default:''|escape }}">{{ r.error_summary }}</span>
                 </td>
+                <td class="font-monospace">
+                  {% if r.state == 'SKIPPED' %}
+                    <button type="button" class="btn btn-sm btn-outline-warning ops-rerun" data-run-id="{{ r.id }}">re-run</button>
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
               </tr>
             {% endfor %}
           </tbody>
@@ -93,6 +101,31 @@
       </div>
     </div>
   </div>
+
+  <!-- Re-run Modal -->
+  <div class="modal fade" id="ops-rerun-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Re-run JobRun</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="alert alert-warning py-2 px-3 small mb-2">
+            この JobRun（SKIPPED）を再投入します。新しい JobRun を作成します。
+          </div>
+          <div class="small text-body-secondary">対象:</div>
+          <div class="fw-semibold" id="ops-rerun-target">—</div>
+          <div id="ops-rerun-errors" class="alert alert-danger d-none mt-2 mb-0 small"></div>
+          <input type="hidden" id="ops-rerun-run-id" />
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button id="ops-rerun-confirm" type="button" class="btn btn-warning">Re-run</button>
+        </div>
+      </div>
+    </div>
+  </div>
 {% endblock %}
 
 {% block scripts %}
@@ -107,12 +140,51 @@
         order: [[0, 'desc']],
       });
 
+      const notyf = new Notyf({ duration: 2000 });
+
+      function getCookie(name) {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) return parts.pop().split(';').shift();
+        return '';
+      }
+
+      function escapeRegex(s) {
+        return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      }
+
       (function applyInitialFilter() {
         try {
           const params = new URLSearchParams(location.search);
           const workerId = params.get('worker_id');
           if (workerId) {
-            dt.search(String(workerId)).draw();
+            // Mark as drilldown so we can clear it when the user opens JobRuns from the menu later.
+            // (DataTables stateSave persists column searches across navigations.)
+            try {
+              sessionStorage.setItem('scheduler_ops_job_runs_drilldown_worker_id', String(workerId));
+            } catch {
+              // ignore
+            }
+            // Strict match on assigned_worker_id column (index=6).
+            const pattern = `^${escapeRegex(workerId)}$`;
+            dt.column(6).search(pattern, true, false).draw();
+          } else {
+            // If the last visit applied a drilldown filter, clear ONLY that column filter.
+            // This keeps normal user-applied filters/stateSave intact.
+            let prev = '';
+            try {
+              prev = sessionStorage.getItem('scheduler_ops_job_runs_drilldown_worker_id') || '';
+            } catch {
+              prev = '';
+            }
+            if (prev) {
+              try {
+                sessionStorage.removeItem('scheduler_ops_job_runs_drilldown_worker_id');
+              } catch {
+                // ignore
+              }
+              dt.column(6).search('', true, false).draw();
+            }
           }
         } catch {
           // ignore
@@ -178,6 +250,124 @@
       const logErrEl = document.getElementById('ops-log-errors');
       const logDlEl = document.getElementById('ops-log-download');
 
+      const rerunModalEl = document.getElementById('ops-rerun-modal');
+      const rerunModal = rerunModalEl ? new bootstrap.Modal(rerunModalEl) : null;
+      const rerunTargetEl = document.getElementById('ops-rerun-target');
+      const rerunIdEl = document.getElementById('ops-rerun-run-id');
+      const rerunErrEl = document.getElementById('ops-rerun-errors');
+      const rerunConfirmBtn = document.getElementById('ops-rerun-confirm');
+
+      const runsById = new Map();
+
+      function buildRow(r) {
+        const jobCell = `<span class="font-monospace">${r.job_definition_id ?? ''}</span>`
+          + ' <span class="text-body-secondary">/</span> '
+          + `${escapeHtml(r.job_definition_name ?? '')}`;
+        const schedTxt = scheduleToText(r.job_definition_type, r.job_definition_schedule);
+        const err = r.error_summary ?? '';
+        const errEsc = escapeHtml(err);
+        const logRef = r.log_ref ?? '';
+        const logCell = logRef
+          ? `<button type="button" class="btn btn-sm btn-outline-light ops-view-log" data-run-id="${r.id ?? ''}">view</button>`
+          : '—';
+
+        const actionCell = (r.state === 'SKIPPED')
+          ? `<button type="button" class="btn btn-sm btn-outline-warning ops-rerun" data-run-id="${r.id ?? ''}">re-run</button>`
+          : '—';
+
+        const cpuS = (r.resource_cpu_seconds_total != null) ? Number(r.resource_cpu_seconds_total) : null;
+        const durS = durationSeconds(r.started_at, r.finished_at);
+        const cpuPct = (cpuS != null && durS != null && durS > 0) ? (cpuS / durS) * 100.0 : null;
+
+        return [
+          `<span class="font-monospace">${r.id ?? ''}</span>`,
+          jobCell,
+          `<span class="font-monospace">${escapeHtml(schedTxt)}</span>`,
+          `<span class="font-monospace">${r.state ?? ''}</span>`,
+          `<span class="font-monospace">${r.attempt ?? ''}</span>`,
+          `<span class="font-monospace">${fmtTs(r.scheduled_for)}</span>`,
+          `<span class="font-monospace">${r.assigned_worker_id ?? ''}</span>`,
+          `<span class="font-monospace">${fmtTs(r.started_at)}</span>`,
+          `<span class="font-monospace">${fmtTs(r.finished_at)}</span>`,
+          `<span class="font-monospace">${cpuS == null ? '—' : cpuS.toFixed(3)}</span>`,
+          `<span class="font-monospace">${cpuPct == null ? '—' : cpuPct.toFixed(1)}</span>`,
+          `<span class="font-monospace">${r.resource_peak_rss_bytes == null ? '—' : fmtBytes(r.resource_peak_rss_bytes)}</span>`,
+          `<span class="font-monospace">${r.resource_io_read_bytes == null ? '—' : fmtBytes(r.resource_io_read_bytes)}</span>`,
+          `<span class="font-monospace">${r.resource_io_write_bytes == null ? '—' : fmtBytes(r.resource_io_write_bytes)}</span>`,
+          `<span class="font-monospace">${logCell}</span>`,
+          `<span class="font-monospace" title="${errEsc}">${errEsc}</span>`,
+          `<span class="font-monospace">${actionCell}</span>`,
+        ];
+      }
+
+      function showRerunErrors(errors) {
+        if (!rerunErrEl) return;
+        if (!errors || errors.length === 0) {
+          rerunErrEl.classList.add('d-none');
+          rerunErrEl.textContent = '';
+          return;
+        }
+        rerunErrEl.classList.remove('d-none');
+        rerunErrEl.textContent = errors.join('\n');
+      }
+
+      function openRerunModal(runId) {
+        if (!rerunModal) return;
+        showRerunErrors([]);
+        const r = runsById.get(Number(runId));
+        if (rerunIdEl) rerunIdEl.value = String(runId);
+        if (rerunTargetEl) {
+          const jobName = r ? (r.job_definition_name ?? '') : '';
+          const jobId = r ? (r.job_definition_id ?? '') : '';
+          rerunTargetEl.textContent = jobId ? `${jobName} (#${jobId}) / JobRun #${runId}` : `JobRun #${runId}`;
+        }
+        rerunModal.show();
+      }
+
+      async function rerunJobRun(runId) {
+        showRerunErrors([]);
+        const url = ("{% url 'scheduler_ops:api_job_run_rerun' 0 %}".replace('/0/rerun/', `/${runId}/rerun/`));
+        const btn = rerunConfirmBtn;
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = 'Re-running...';
+        }
+        try {
+          const resp = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRFToken': getCookie('csrftoken'),
+            },
+            body: JSON.stringify({}),
+          });
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok || !data || !data.ok) {
+            const errs = (data && data.errors) ? data.errors : ['re-run failed'];
+            showRerunErrors(errs);
+            return;
+          }
+          const newRun = data && data.new_run ? data.new_run : null;
+          const newId = newRun && newRun.id ? newRun.id : null;
+          notyf.success(newId ? `Re-run queued (#${newId})` : 'Re-run queued');
+          rerunModal && rerunModal.hide();
+
+          // Update table without full refresh (keeps DataTables state/paging).
+          if (newRun && newRun.id != null) {
+            runsById.set(Number(newRun.id), newRun);
+            dt.row.add(buildRow(newRun));
+            dt.draw(false);
+          }
+        } catch {
+          showRerunErrors(['network error']);
+        } finally {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Re-run';
+          }
+        }
+      }
+
       function showLogErrors(errors) {
         if (!logErrEl) return;
         if (!errors || errors.length === 0) {
@@ -222,43 +412,14 @@
 
       window.schedulerOpsRefresh = async function () {
         const url = "{% url 'scheduler_ops:api_job_runs' %}?_=" + Date.now();
-        const data = await $.getJSON(url);
+        const data = await (window.schedulerOpsGetJSON ? window.schedulerOpsGetJSON(url) : $.getJSON(url));
 
-        const rows = (data.runs || []).map(function (r) {
-          const jobCell = `<span class="font-monospace">${r.job_definition_id ?? ''}</span>`
-            + ' <span class="text-body-secondary">/</span> '
-            + `${r.job_definition_name ?? ''}`;
-          const schedTxt = scheduleToText(r.job_definition_type, r.job_definition_schedule);
-          const err = r.error_summary ?? '';
-          const errEsc = escapeHtml(err);
-          const logRef = r.log_ref ?? '';
-          const logCell = logRef
-            ? `<button type="button" class="btn btn-sm btn-outline-light ops-view-log" data-run-id="${r.id ?? ''}">view</button>`
-            : '—';
-
-          const cpuS = (r.resource_cpu_seconds_total != null) ? Number(r.resource_cpu_seconds_total) : null;
-          const durS = durationSeconds(r.started_at, r.finished_at);
-          const cpuPct = (cpuS != null && durS != null && durS > 0) ? (cpuS / durS) * 100.0 : null;
-
-          return [
-            `<span class="font-monospace">${r.id ?? ''}</span>`,
-            jobCell,
-            `<span class="font-monospace">${escapeHtml(schedTxt)}</span>`,
-            `<span class="font-monospace">${r.state ?? ''}</span>`,
-            `<span class="font-monospace">${r.attempt ?? ''}</span>`,
-            `<span class="font-monospace">${fmtTs(r.scheduled_for)}</span>`,
-            `<span class="font-monospace">${r.assigned_worker_id ?? ''}</span>`,
-            `<span class="font-monospace">${fmtTs(r.started_at)}</span>`,
-            `<span class="font-monospace">${fmtTs(r.finished_at)}</span>`,
-            `<span class="font-monospace">${cpuS == null ? '—' : cpuS.toFixed(3)}</span>`,
-            `<span class="font-monospace">${cpuPct == null ? '—' : cpuPct.toFixed(1)}</span>`,
-            `<span class="font-monospace">${r.resource_peak_rss_bytes == null ? '—' : fmtBytes(r.resource_peak_rss_bytes)}</span>`,
-            `<span class="font-monospace">${r.resource_io_read_bytes == null ? '—' : fmtBytes(r.resource_io_read_bytes)}</span>`,
-            `<span class="font-monospace">${r.resource_io_write_bytes == null ? '—' : fmtBytes(r.resource_io_write_bytes)}</span>`,
-            `<span class="font-monospace">${logCell}</span>`,
-            `<span class="font-monospace" title="${errEsc}">${errEsc}</span>`,
-          ];
+        runsById.clear();
+        (data.runs || []).forEach(function (r) {
+          if (r && r.id != null) runsById.set(Number(r.id), r);
         });
+
+        const rows = (data.runs || []).map(buildRow);
 
         dt.clear();
         dt.rows.add(rows);
@@ -268,6 +429,15 @@
       };
 
       tableEl.addEventListener('click', function (e) {
+        const rerunBtn = e.target && e.target.closest ? e.target.closest('.ops-rerun') : null;
+        if (rerunBtn) {
+          e.preventDefault();
+          const runId = rerunBtn.getAttribute('data-run-id');
+          if (!runId) return;
+          openRerunModal(runId);
+          return;
+        }
+
         const btn = e.target && e.target.closest ? e.target.closest('.ops-view-log') : null;
         if (!btn) return;
         e.preventDefault();
@@ -275,6 +445,14 @@
         if (!runId) return;
         openLogModal(runId);
       });
+
+      if (rerunConfirmBtn) {
+        rerunConfirmBtn.addEventListener('click', function () {
+          const runId = rerunIdEl ? rerunIdEl.value : '';
+          if (!runId) return;
+          rerunJobRun(runId);
+        });
+      }
     })();
   </script>
 {% endblock %}

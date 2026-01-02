@@ -176,10 +176,14 @@ def _archive_log_if_enabled(*, local_path: Path, worker_id: str, job_run_id: int
     except Exception as e:
         return None, f"upload failed: {type(e).__name__}"
 
-    public_base = cfg.get("public_base_url")
-    if public_base:
-        url = f"{public_base.rstrip('/')}/{cfg['bucket']}/{key}"
+    # Prefer externally reachable URL (PUBLIC_BASE_URL). If blank, fall back to the internal endpoint URL
+    # so Ops UI can still link to and fetch logs in single-URL deployments.
+    base_url = (cfg.get("public_base_url") or "").strip() or (cfg.get("endpoint_url") or "").strip()
+    if base_url:
+        url = f"{base_url.rstrip('/')}/{cfg['bucket']}/{key}"
         return url, None
+
+    # Fallback to a non-http reference when no base URL is available.
     return f"s3://{cfg['bucket']}/{key}", None
 
 

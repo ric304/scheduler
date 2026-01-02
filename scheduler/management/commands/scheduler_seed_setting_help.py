@@ -87,6 +87,14 @@ class Command(BaseCommand):
 
 
 DEFAULT_HELP: dict[str, dict] = {
+    "SCHEDULER_LEADER_PING_BATCH_SIZE": {
+        "title": "Leader ping batch size",
+        "description": "Leaderが1回のループで疎通確認(ping)するworker数。全workerを分割して巡回します。",
+        "impact": "大きいほど検知は速いが、RPC負荷/処理時間が増えます。小さいほど負荷は下がるが、検知が遅くなります。",
+        "input_type": "text",
+        "constraints": {"min": 1, "max": 50},
+        "examples": [1, 2, 4],
+    },
     "SCHEDULER_MIN_ONLINE_WORKERS": {
         "title": "Minimum online workers",
         "description": "Redis heartbeatで判定した『オンラインworker数』の最低値。スケールアウト/インの運用に合わせて調整します。",
@@ -268,8 +276,8 @@ DEFAULT_HELP: dict[str, dict] = {
     },
     "SCHEDULER_SKIP_LATE_RUNS_AFTER_SECONDS": {
         "title": "Skip late runs after seconds",
-        "description": "遅延したASSIGNED実行をスキップする閾値（秒）。",
-        "impact": "ダウン後の大量バックログ実行を防げますが、業務上重要なジョブがスキップされ得ます。",
+        "description": "scheduled_for が現在時刻よりこの秒数以上遅れているJobRunをスキップ（SKIPPED）します。長時間停止後のバックログ大量実行を防ぐための安全弁です。",
+        "impact": "値を小さくすると復旧後のバックログ実行は抑えられますが、重要ジョブもスキップされ得ます。スキップされた分は必要に応じて手動で再実行してください。",
         "input_type": "text",
         "constraints": {"min": 0},
         "examples": [300],
@@ -362,8 +370,8 @@ DEFAULT_HELP: dict[str, dict] = {
     },
     "SCHEDULER_LOG_ARCHIVE_S3_ENDPOINT_URL": {
         "title": "S3 endpoint URL",
-        "description": "S3互換エンドポイント（MinIO等）のURL。",
-        "impact": "誤るとアップロードに失敗します。",
+        "description": "S3互換エンドポイント（MinIO等）のURL（内部向け/接続先）。",
+        "impact": "誤るとアップロードに失敗します。PUBLIC_BASE_URL が未設定の場合、UI/ログ参照のベースURLとしても利用されます。",
         "input_type": "text",
         "examples": ["http://127.0.0.1:9000"],
     },
@@ -390,8 +398,8 @@ DEFAULT_HELP: dict[str, dict] = {
     },
     "SCHEDULER_LOG_ARCHIVE_PUBLIC_BASE_URL": {
         "title": "Public base URL",
-        "description": "UIがlog_refをURL表示/取得するためのベースURL（allowlist対象）。",
-        "impact": "誤るとUIでログが読めません。URLを公開する構成の場合は漏洩リスクに注意。",
+        "description": "UIがlog_refをURL表示/取得するためのベースURL（allowlist対象、外部向けURL）。未設定の場合は S3_ENDPOINT_URL を利用します。",
+        "impact": "誤るとUIでログが読めません。内部URLと外部URLを分けたい場合にのみ設定してください（同一URL運用なら未設定でOK）。公開する構成の場合は漏洩リスクに注意。",
         "input_type": "text",
         "examples": ["http://127.0.0.1:9000"],
     },
