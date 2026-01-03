@@ -1,6 +1,6 @@
-# 開発環境 構築手順（Windows + WSL / ローカル）
+# 開発環境 構築手順（Windows + WSL / ローカル / K8S）
 
-作成日: 2025-12-28
+作成日: 2025-12-28（更新: 2026-01-02）
 
 この手順は、設計書ベースのジョブ実行基盤を **ローカル開発で動かす** ための環境構築を整理したものです。
 
@@ -14,9 +14,8 @@
 - gRPC: mTLS（開発は長期自己署名証明書を許容）
 
 補足（K8sについて）:
-- テスト効率のため、当面は **K8s環境（kind/minikube等）の構築は後回し** にします。
-  - ローカル（WSL + docker compose + 複数 `scheduler_worker`）でフェーズF（実ジョブ実行）まで進められます。
-  - K8sマニフェスト/証明書更新（M7）は後段でまとめて整備します。
+- ローカル（WSL + docker compose + 複数 `scheduler_worker`）でもフェーズF（実ジョブ実行）まで進められます。
+- 一方で「K8s環境での挙動確認」「CI/CD（GitOps）」「Secrets/TLSマウント」を早期に検証したい場合は、後述の **VM×2（Ubuntu 24.02 LTS）+ k3s** 手順でK8s開発環境を用意できます。
 
 ---
 
@@ -300,7 +299,291 @@ VS Code の「Recommended」からまとめてインストールできます。
 
 ---
 
-## 8. つまずきやすい点
+## 8. K8S開発環境（Ubuntu 24.02 LTS VM×2 / k3s）
+
+この章は「K8s環境でSchedulerを動かして検証する」ための最小構成です。
+
+想定:
+- VM1: control plane（例: `k8s-master`）
+- VM2: worker（例: `k8s-worker`）
+- どちらも Ubuntu 24.02 LTS
+- 2台は相互に疎通可能（固定IP推奨）
+
+### 8.1 VM共通の下準備
+
+両VMで実行:
+
+1) OS更新
+- `sudo apt-get update && sudo apt-get -y upgrade`
+
+2) Swap無効化（K8s要件）
+- `sudo swapoff -a`
+- `/etc/fstab` の swap 行をコメントアウト（永続化）
+
+3) 依存
+- `sudo apt-get install -y curl ca-certificates gnupg lsb-release`
+
+4) ホスト名/名前解決（任意だが推奨）
+- 例: `/etc/hosts` に相互の `k8s-master` / `k8s-worker` を追加
+
+### 8.2 k3sのインストール
+
+#### 8.2.1 VM1（control plane）
+
+VM1で実行（例: `k8s-master`）:
+
+注: この手順では Ingress と LoadBalancer を別途入れるため、k3s標準の Traefik / ServiceLB を無効化します。
+
+- `curl -sfL https://get.k3s.io | sh -s - server --write-kubeconfig-mode 644 --disable traefik --disable servicelb`
+
+推奨: 安定版を明示的に指定してインストールします（`INSTALL_K3S_VERSION` を使用）。
+
+```bash
+# 例: 安定の既知バージョンを指定
+export INSTALL_K3S_VERSION="v1.30.7+k3s1"
+curl -sfL https://get.k3s.io | sh -s - server --write-kubeconfig-mode 644 --disable traefik --disable servicelb
+```
+
+トラブルシューティング（ダウンロード失敗や 404 が出る場合）:
+
+- IPv6 経由で接続が不安定な環境では IPv4 を強制して試してください。
+
+```bash
+curl -4 -sfL https://get.k3s.io | sh -s - server --write-kubeconfig-mode 644 --disable traefik --disable servicelb
+```
+
+- インストーラが GitHub リリースを取得できない（ネットワーク制限やプロキシ等）場合は、バイナリを手動で配置してインストーラのダウンロード工程をスキップできます。
+
+```bash
+# 1) 使いたいバージョンを明示してバイナリを配置（例）
+export K3S_VER="v1.30.7+k3s1"
+curl -fL --retry 5 -o /usr/local/bin/k3s "https://github.com/k3s-io/k3s/releases/download/${K3S_VER}/k3s"
+chmod +x /usr/local/bin/k3s
+
+# 2) インストーラにダウンロードをスキップさせてセットアップ
+export INSTALL_K3S_SKIP_DOWNLOAD=true
+curl -sfL https://get.k3s.io | sh -s - server --write-kubeconfig-mode 644 --disable traefik --disable servicelb
+```
+
+確認:
+- `sudo kubectl get nodes`
+
+#### 8.2.2 VM2（worker）
+
+VM1で token を取得:
+- `sudo cat /var/lib/rancher/k3s/server/node-token`
+
+VM2で実行（`<MASTER_IP>` と `<TOKEN>` を置換）:
+
+- `curl -sfL https://get.k3s.io | K3S_URL=https://<MASTER_IP>:6443 K3S_TOKEN=<TOKEN> sh -s - agent`
+
+またはマスターと同じバージョンを明示して agent を入れる場合:
+
+```bash
+export INSTALL_K3S_VERSION="v1.30.7+k3s1"
+K3S_URL=https://<MASTER_IP>:6443 K3S_TOKEN=<TOKEN> curl -sfL https://get.k3s.io | sh -s - agent
+```
+
+確認（VM1で）:
+- `sudo kubectl get nodes -o wide`
+
+### 8.3 kubectl を手元PC（WSL）から叩く（任意）
+
+運用UI/デバッグをローカルから見たい場合、`kubeconfig` を手元へ持ってきます。
+
+VM1の kubeconfig:
+- `/etc/rancher/k3s/k3s.yaml`
+
+ポイント:
+- `server: https://127.0.0.1:6443` を `https://<MASTER_IP>:6443` に変更
+- 手元で `kubectl` を使う場合は `~/.kube/config` に配置し `KUBECONFIG` を設定
+
+### 8.4 Ingress / LoadBalancer / TLS
+
+2台VM環境ではクラウドLBが無いので、以下を入れておくと検証が楽です。
+
+事前: VM1に Helm をインストール（例）
+- `curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash`
+
+1) Ingress（推奨: ingress-nginx）
+- `helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx`
+- `helm repo update`
+- `helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx -n ingress-nginx --create-namespace`
+
+2) LoadBalancer（推奨: MetalLB）
+- `helm repo add metallb https://metallb.github.io/metallb`
+- `helm repo update`
+- `helm upgrade --install metallb metallb/metallb -n metallb-system --create-namespace`
+
+MetalLBはアドレスプール設定が必要です。
+例（VMネットワークの未使用IP範囲を指定）:
+
+```yaml
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - 192.168.56.240-192.168.56.250
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: l2
+  namespace: metallb-system
+spec: {}
+```
+
+適用:
+- `kubectl apply -f metallb-pool.yaml`
+
+3) TLS管理（任意、推奨: cert-manager）
+- `helm repo add jetstack https://charts.jetstack.io`
+- `helm repo update`
+- `helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --set crds.enabled=true`
+
+### 8.5 監視（Prometheus / Alertmanager）
+
+本リポジトリのOps UIは Prometheus/Alertmanager のURLをSettingsから参照できます。
+
+推奨（OSS）:
+- kube-prometheus-stack（Prometheus + Alertmanager + Grafana）
+
+例:
+- `helm repo add prometheus-community https://prometheus-community.github.io/helm-charts`
+- `helm repo update`
+- `helm upgrade --install monitoring prometheus-community/kube-prometheus-stack -n monitoring --create-namespace`
+
+### 8.6 依存サービス（Redis / PostgreSQL / MinIO）
+
+開発用途なら、まずは以下のどちらかが現実的です。
+
+A) クラスタ内（すべてK8s上）
+- 速い / 再現性が高い
+
+B) VM上（systemd / docker compose）
+- Stateful系のYAMLをまだ書きたくない場合に楽
+
+CI/CD（GitOps）を前提にするなら、A（クラスタ内）を推奨します。
+
+### 8.7 Scheduler のデプロイ（概要）
+
+ポイント:
+- `SCHEDULER_DEPLOYMENT=k8s` を設定（K8s API healthを有効化）
+- gRPC mTLS の証明書を `Secret` として `/etc/scheduler/tls` にマウント（設計どおり）
+
+例: TLS Secret 作成（手元の `dev-certs/` を使う場合）
+
+- `kubectl create namespace scheduler`
+- `kubectl -n scheduler create secret generic scheduler-grpc-tls --from-file=tls.crt=dev-certs/tls.crt --from-file=tls.key=dev-certs/tls.key`
+
+Deployment/StatefulSetの volumeMount（概念）:
+
+```yaml
+volumeMounts:
+  - name: tls
+    mountPath: /etc/scheduler/tls
+    readOnly: true
+volumes:
+  - name: tls
+    secret:
+      secretName: scheduler-grpc-tls
+```
+
+---
+
+## 9. CI/CD（GitHub Actions + GHCR + Argo CD / GitOps）
+
+この章は「GitHubをリポジトリ」「無料/OSS」「K8sへ自動反映」を前提にした最小構成です。
+
+構成:
+- CI: GitHub Actions（無料枠）
+- Image Registry: GHCR（GitHub Container Registry）
+- CD: Argo CD（OSS、GitOps）
+
+### 9.1 CI（GitHub Actions）概要
+
+やること:
+- PR: `python -m compileall` / `python manage.py check`（必要ならテスト追加）
+- main: Docker build → GHCRへpush
+
+メモ:
+- GHCR push は `GITHUB_TOKEN` で可能（workflowに `permissions: packages: write` が必要）
+
+### 9.2 CD（Argo CD）概要
+
+やること:
+- Argo CDをクラスタへ導入
+- 監視対象リポジトリ（GitHub）に `manifests/`（または `helm/`）を置く
+- Argo CD Application で `main` を追従し、自動sync
+
+導入（例）:
+- `kubectl create namespace argocd`
+- `kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml`
+
+アクセス（例）:
+- 開発用途は port-forward でOK
+  - `kubectl -n argocd port-forward svc/argocd-server 8080:80`
+
+### 9.3 Secrets の扱い（OSS）
+
+選択肢:
+- シンプル: Kubernetes Secret を手動作成（開発のみ）
+- GitOps向け: Sealed Secrets（OSS）
+  - Gitに暗号化されたSecretをコミットできる
+
+---
+
+## 10. 初期設定（K8S向けの推奨値: 環境変数 + Ops Settings）
+
+ここでは「まず動く」ための初期値をまとめます。
+
+### 10.1 Django/アプリの環境変数（Deploymentのenv）
+
+最低限（例）:
+- `DATABASE_URL=postgres://postgres:postgres@postgres.scheduler.svc.cluster.local:5432/scheduler`
+- `SCHEDULER_REDIS_URL=redis://redis.scheduler.svc.cluster.local:6379/0`
+- `SCHEDULER_DEPLOYMENT=k8s`
+
+TLS（Secretを `/etc/scheduler/tls` にマウントする前提）:
+- `SCHEDULER_TLS_CERT_FILE=/etc/scheduler/tls/tls.crt`
+- `SCHEDULER_TLS_KEY_FILE=/etc/scheduler/tls/tls.key`
+
+ログアーカイブ（MinIOをK8s内で使う例）:
+- `SCHEDULER_LOG_ARCHIVE_ENABLED=1`
+- `SCHEDULER_LOG_ARCHIVE_S3_ENDPOINT_URL=http://minio.scheduler.svc.cluster.local:9000`
+- `SCHEDULER_LOG_ARCHIVE_BUCKET=scheduler-logs`
+- `SCHEDULER_LOG_ARCHIVE_ACCESS_KEY_ID=minioadmin`
+- `SCHEDULER_LOG_ARCHIVE_SECRET_ACCESS_KEY=minioadmin`
+
+重要:
+- `SCHEDULER_LOG_ARCHIVE_PUBLIC_BASE_URL` は **未設定でOK**（同一URL運用の場合）
+  - 未設定の場合、Ops UIは `SCHEDULER_LOG_ARCHIVE_S3_ENDPOINT_URL` を参照URLとして利用します。
+  - 内部URLと外部URLを分けたい場合のみ、`SCHEDULER_LOG_ARCHIVE_PUBLIC_BASE_URL` に外部から到達できるURLを設定してください。
+
+### 10.2 Ops UI Settings（/ops/settings/ で投入する値）
+
+SettingsはDBに保存され、運用中に変更可能です（ConfigReloadRequestで反映）。
+
+K8sでの推奨（例）:
+- `SCHEDULER_DEPLOYMENT` : `k8s`
+- `SCHEDULER_PROMETHEUS_URL` : `http://monitoring-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090`
+- `SCHEDULER_ALERTMANAGER_URL` : `http://monitoring-kube-prometheus-alertmanager.monitoring.svc.cluster.local:9093`
+
+（任意）バックログ暴走を抑える:
+- `SCHEDULER_SKIP_LATE_RUNS_AFTER_SECONDS` : `300`（例: 5分）
+
+（任意）Leader ping の負荷調整:
+- `SCHEDULER_LEADER_PING_BATCH_SIZE` : `50`（環境に合わせる）
+
+ログ参照（外部公開URLが必要なときだけ）:
+- `SCHEDULER_LOG_ARCHIVE_PUBLIC_BASE_URL` : `https://minio.example.local` など
+
+---
+
+## 11. つまずきやすい点
 
 - Windowsでの証明書パス
   - K8s前提の `/etc/scheduler/tls/...` はローカルでは使えないので、環境変数で差し替える
@@ -311,7 +594,7 @@ VS Code の「Recommended」からまとめてインストールできます。
 
 ---
 
-## 9. 次のアクション
+## 12. 次のアクション
 
 - 実装着手（M0）として Django app 雛形と依存関係ファイル（requirements/pyproject）を追加
 - それに合わせて本手順を「コマンドがそのまま動く」形に更新

@@ -40,6 +40,10 @@ TLSパス（docs/dev-setup.md / docs/grpc-api.md）:
   - `SCHEDULER_TLS_CERT_FILE=/mnt/c/vscode/Scheduler/dev-certs/tls.crt`
   - `SCHEDULER_TLS_KEY_FILE=/mnt/c/vscode/Scheduler/dev-certs/tls.key`
 
+（追記: k3s インストール）
+- `docs/dev-setup.md` の k3s 手順を参照し、インストール時は明示的に `INSTALL_K3S_VERSION` を使う。
+- ネットワークや GitHub へのダウンロードに失敗する環境では `curl -4` を試すか、手動でバイナリを `/usr/local/bin/k3s` に配置して `INSTALL_K3S_SKIP_DOWNLOAD=true` を使ってインストールをスキップする。
+
 ---
 
 ## 2. Ops UI 実装ルール（最重要）
