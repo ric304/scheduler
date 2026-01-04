@@ -15,7 +15,7 @@
 
 補足（K8sについて）:
 - ローカル（WSL + docker compose + 複数 `scheduler_worker`）でもフェーズF（実ジョブ実行）まで進められます。
-- 一方で「K8s環境での挙動確認」「CI/CD（GitOps）」「Secrets/TLSマウント」を早期に検証したい場合は、後述の **VM×2（Ubuntu 24.02 LTS）+ k3s** 手順でK8s開発環境を用意できます。
+- 一方で「K8s環境での挙動確認」「CI/CD（GitOps）」「Secrets/TLSマウント」を早期に検証したい場合は、後述の **VM×3（Ubuntu 24.02 LTS）+ k3s** 手順でK8s開発環境を用意できます。
 
 ---
 
@@ -299,15 +299,20 @@ VS Code の「Recommended」からまとめてインストールできます。
 
 ---
 
-## 8. K8S開発環境（Ubuntu 24.02 LTS VM×2 / k3s）
+## 8. K8S開発環境（Ubuntu 24.02 LTS VM×3 / k3s）
 
 この章は「K8s環境でSchedulerを動かして検証する」ための最小構成です。
 
 想定:
 - VM1: control plane（例: `k8s-master`）
 - VM2: worker（例: `k8s-worker`）
-- どちらも Ubuntu 24.02 LTS
-- 2台は相互に疎通可能（固定IP推奨）
+- VM3: worker（例: `k8s-worker2`）
+- いずれも Ubuntu 24.02 LTS
+- 3台は相互に疎通可能（固定IP推奨）
+
+注意:
+- これはあくまで「K8s上のアプリケーション検証」のための開発環境です。
+- K8s自体の可用性（マルチマスター等）は考慮しません（シングルマスター構成）。
 
 ### 8.1 VM共通の下準備
 
@@ -377,6 +382,12 @@ VM2で実行（`<MASTER_IP>` と `<TOKEN>` を置換）:
 
 - `curl -sfL https://get.k3s.io | K3S_URL=https://<MASTER_IP>:6443 K3S_TOKEN=<TOKEN> sh -s - agent`
 
+#### 8.2.3 VM3（worker2）
+
+VM3（`k8s-worker2`）もVM2と同様にjoinします（`<MASTER_IP>` と `<TOKEN>` を置換）:
+
+- `curl -sfL https://get.k3s.io | K3S_URL=https://<MASTER_IP>:6443 K3S_TOKEN=<TOKEN> sh -s - agent`
+
 またはマスターと同じバージョンを明示して agent を入れる場合:
 
 ```bash
@@ -400,7 +411,7 @@ VM1の kubeconfig:
 
 ### 8.4 Ingress / LoadBalancer / TLS
 
-2台VM環境ではクラウドLBが無いので、以下を入れておくと検証が楽です。
+VM環境ではクラウドLBが無いので、以下を入れておくと検証が楽です。
 
 事前: VM1に Helm をインストール（例）
 - `curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash`
@@ -426,7 +437,7 @@ metadata:
   namespace: metallb-system
 spec:
   addresses:
-    - 192.168.56.240-192.168.56.250
+    - 192.168.3.240-192.168.3.250
 ---
 apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
@@ -456,17 +467,168 @@ spec: {}
 - `helm repo update`
 - `helm upgrade --install monitoring prometheus-community/kube-prometheus-stack -n monitoring --create-namespace`
 
+
+GrafanaのAdminユーザ/パスワード:
+ kubectl --namespace monitoring get secrets monitoring-grafana -o jsonpath="{.data.admin-password}" | base64 -d ; echo
+
+ NAME                                      TYPE           CLUSTER-IP      EXTERNAL-IP     PORT(S)                      
+monitoring-grafana                        LoadBalancer   10.43.45.196    192.168.3.241   80:31842/TCP                    
+monitoring-kube-prometheus-alertmanager   LoadBalancer   10.43.87.90     192.168.3.242   9093:32659/TCP,8080:31057/TCP   
+monitoring-kube-prometheus-prometheus     LoadBalancer   10.43.77.229    192.168.3.243   9090:30359/TCP,8080:31077/TCP  
+
+上記３つのSVCをClusterIPからLoadBalancerに変更しているため、`EXTERNAL-IP` に変更し、外部よりアクセス可能に設定する。
+
 ### 8.6 依存サービス（Redis / PostgreSQL / MinIO）
 
-開発用途なら、まずは以下のどちらかが現実的です。
+ここでは「クラスタ内（K8s上）に Redis / PostgreSQL / MinIO をデプロイする」詳細手順を示します。
+事前: クラスタに StorageClass（例: `local-path` / `standard`）があることを確認してください。k3s 環境では `local-path` が既定の場合が多いです。
 
-A) クラスタ内（すべてK8s上）
-- 速い / 再現性が高い
+1) 名前空間と Helm リポジトリの追加
 
-B) VM上（systemd / docker compose）
-- Stateful系のYAMLをまだ書きたくない場合に楽
+```bash
+kubectl create namespace scheduler-infra
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo update
+```
 
-CI/CD（GitOps）を前提にするなら、A（クラスタ内）を推奨します。
+2) Redis（冗長構成: Sentinel レプリケーション） — k8s-master と k8s-worker に分散配置する例
+
+まずノードにラベルを付けて分散を観察しやすくします（任意）:
+
+```bash
+kubectl label node k8s-master redis-role=preferred
+kubectl label node k8s-worker redis-role=preferred
+```
+
+`redis-values.yaml` のサンプル（Bitnami chart の replication + sentinel を使用）:
+
+```yaml
+architecture: replication
+auth:
+  password: "redispassword"
+global:
+  storageClass: local-path
+master:
+  persistence:
+    enabled: true
+    size: 2Gi
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - redis
+          topologyKey: kubernetes.io/hostname
+replica:
+  replicaCount: 2
+  persistence:
+    enabled: true
+    size: 2Gi
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - redis
+          topologyKey: kubernetes.io/hostname
+sentinel:
+  enabled: true
+  replicaCount: 3
+```
+
+デプロイ:
+
+```bash
+helm upgrade --install scheduler-redis bitnami/redis -n scheduler-infra -f redis-values.yaml --wait
+```
+
+確認:
+
+```bash
+kubectl get pods -n scheduler-infra -l app.kubernetes.io/name=redis -o wide
+kubectl get svc -n scheduler-infra
+# Sentinel 情報確認 (sentinel Pod 名を指定)
+kubectl exec -n scheduler-infra -it <sentinel-pod> -- redis-cli -p 26379 sentinel masters
+# マスター/レプリカ情報確認 (任意の redis Pod 名を指定)
+kubectl exec -n scheduler-infra -it <redis-pod> -- redis-cli -a redispassword info replication
+```
+
+接続と利用上の注意:
+- Scheduler アプリは `SCHEDULER_REDIS_URL` をそのまま `redis.Redis.from_url(...)` に渡す実装です（Sentinel の「master 自動解決」を直接は行いません）。
+- Bitnami Redis（replication + sentinel）を使う場合、アプリの接続先は **master Service** を指定してください: `redis://scheduler-redis-master.scheduler-infra.svc.cluster.local:6379/0`
+  - フェイルオーバ時は master Pod が切り替わる想定です（切り替え中は接続が一時的に切れる可能性があります）。
+- Sentinel（26379）に直接つないで master を解決したい場合は、アプリ側に Sentinel 設定を追加する実装変更が必要です。
+- 本番ではパスワードを `Secret` にし、PVC サイズとリソース制限を要検討してください。
+
+3) PostgreSQL（開発向け：単一 Primary）
+
+```bash
+helm install scheduler-postgres bitnami/postgresql -n scheduler-infra \
+  --set auth.username=postgres \
+  --set auth.password=postgres \
+  --set auth.database=scheduler \
+  --set primary.persistence.size=5Gi \
+  --set global.storageClass=local-path
+```
+
+- 接続文字列（クラスタ内）: `postgresql://postgres:postgres@scheduler-postgres-postgresql.scheduler-infra.svc.cluster.local:5432/scheduler`
+
+4) MinIO（S3 互換ストレージ）
+
+```bash
+helm install scheduler-minio bitnami/minio -n scheduler-infra \
+  --set auth.rootUser=minioadmin \
+  --set auth.rootPassword=minioadmin \
+  --set persistence.size=10Gi \
+  --set global.storageClass=local-path
+```
+
+- 内部エンドポイント: `http://scheduler-minio.scheduler-infra.svc.cluster.local:9000`
+- ローカルからコンソールを開くにはポートフォワード:
+
+```bash
+kubectl port-forward -n scheduler-infra svc/scheduler-minio 9000:9000
+# open http://127.0.0.1:9000 (user=minioadmin, pass=minioadmin)
+```
+
+5) 接続情報を Kubernetes Secret に登録（例）
+
+```bash
+kubectl -n scheduler-infra create secret generic scheduler-db-credentials \
+  --from-literal=DATABASE_URL='postgresql://postgres:postgres@scheduler-postgres-postgresql.scheduler-infra.svc.cluster.local:5432/scheduler'
+
+kubectl -n scheduler-infra create secret generic scheduler-redis-credentials \
+  --from-literal=REDIS_URL='redis://scheduler-redis-master.scheduler-infra.svc.cluster.local:6379/0' \
+  --from-literal=REDIS_PASSWORD='redispassword'
+
+kubectl -n scheduler-infra create secret generic scheduler-minio-credentials \
+  --from-literal=MINIO_ENDPOINT='http://scheduler-minio.scheduler-infra.svc.cluster.local:9000' \
+  --from-literal=MINIO_ACCESS_KEY='minioadmin' \
+  --from-literal=MINIO_SECRET_KEY='minioadmin'
+```
+
+6) 動作確認
+
+```bash
+kubectl get pods -n scheduler-infra
+kubectl get svc -n scheduler-infra
+kubectl logs -n scheduler-infra deployment/scheduler-postgres-postgresql
+```
+
+7) 注意点 / ベストプラクティス
+
+- StorageClass: 開発環境では `local-path` や `hostpath` を使うことが多いです。クラウド環境ではクラウド-provided StorageClass を使ってください。
+- 資格情報: 開発では平文でもよいですが、本番/ステージングでは `SealedSecrets` や External Secrets を使って安全に管理してください。
+- 再現性: `values.yaml` を作り `helm upgrade --install -f values.yaml` でデプロイする運用が望ましいです。
+- バックアップとリストア: Postgres のバックアップ方針（定期スナップショット、pgBackRest 等）を事前に決めておいてください。
+
+この手順でクラスタ内に Redis / PostgreSQL / MinIO を用意できます。`SCHEDULER` アプリケーション側は上記のサービス名/シークレットを利用して接続設定を行ってください。
 
 ### 8.7 Scheduler のデプロイ（概要）
 
@@ -543,8 +705,8 @@ volumes:
 ### 10.1 Django/アプリの環境変数（Deploymentのenv）
 
 最低限（例）:
-- `DATABASE_URL=postgres://postgres:postgres@postgres.scheduler.svc.cluster.local:5432/scheduler`
-- `SCHEDULER_REDIS_URL=redis://redis.scheduler.svc.cluster.local:6379/0`
+- `DATABASE_URL=postgresql://postgres:postgres@scheduler-postgres-postgresql.scheduler-infra.svc.cluster.local:5432/scheduler`
+- `SCHEDULER_REDIS_URL=redis://scheduler-redis-master.scheduler-infra.svc.cluster.local:6379/0`
 - `SCHEDULER_DEPLOYMENT=k8s`
 
 TLS（Secretを `/etc/scheduler/tls` にマウントする前提）:
@@ -553,7 +715,7 @@ TLS（Secretを `/etc/scheduler/tls` にマウントする前提）:
 
 ログアーカイブ（MinIOをK8s内で使う例）:
 - `SCHEDULER_LOG_ARCHIVE_ENABLED=1`
-- `SCHEDULER_LOG_ARCHIVE_S3_ENDPOINT_URL=http://minio.scheduler.svc.cluster.local:9000`
+- `SCHEDULER_LOG_ARCHIVE_S3_ENDPOINT_URL=http://scheduler-minio.scheduler-infra.svc.cluster.local:9000`
 - `SCHEDULER_LOG_ARCHIVE_BUCKET=scheduler-logs`
 - `SCHEDULER_LOG_ARCHIVE_ACCESS_KEY_ID=minioadmin`
 - `SCHEDULER_LOG_ARCHIVE_SECRET_ACCESS_KEY=minioadmin`
@@ -586,15 +748,4 @@ K8sでの推奨（例）:
 ## 11. つまずきやすい点
 
 - Windowsでの証明書パス
-  - K8s前提の `/etc/scheduler/tls/...` はローカルでは使えないので、環境変数で差し替える
-- Redis/Postgresの疎通
-  - ポート競合（6379/5432）に注意
-- gRPCポート
-  - Workerを複数立てる場合、portをずらす
-
----
-
-## 12. 次のアクション
-
-- 実装着手（M0）として Django app 雛形と依存関係ファイル（requirements/pyproject）を追加
-- それに合わせて本手順を「コマンドがそのまま動く」形に更新
+  - K

@@ -312,3 +312,42 @@
   - 例: node_id 指定 / ラベル指定 / ワーカープール指定
   - 用途: 特定ノード上の依存（ローカルデバイス/データ）や、専用ワーカーへの割当
   - 位置づけ: 負荷分散・リバランスと一体で設計（UI/DB/API/割当ロジック）
+
+## 6. 直近のTODO（方向修正）
+
+方針（2026-01）:
+- 設定はDB側で一元管理し、Ops UI（Settings）から変更→Applyで反映できることを正とする。
+- RedisはSchedulerの一部（必須コンポーネント）として扱い、デフォルトはSPOFを排除した構成を指向する。
+- 検証環境は「最低限2ノード」で、Schedulerが提供する可用性/分断耐性の検証ができることを目標とする。
+- 一方で、ホストDjangoアプリとして検討すべき事項（DB基盤やK8s運用設計）はScheduler AddOnのスコープ外とする。
+
+直近TODO（上から順に着手）:
+- 1) 「DB一元管理」の境界を確定
+  - DBに持つ: 閾値/動作パラメータ（tick間隔、TTL、再割当猶予、ログ保持、リトライ等）
+  - 要方針決定: 接続情報/認証情報（例: Redisパスワード、外部URL、トークン）をDBに保持するか（Secrets機構に委譲するか）
+- 2) 設定キーの分類と編集ガードを整備
+  - `SchedulerSettingHelp` の `is_secret/editable/constraints` を正として、Ops UIとAPIの両方で一貫した入力制約を適用
+  - `SCHEDULER_REDIS_URL` 等の“URLに資格情報が混入し得るキー”のマスク方針を確定（誤って平文表示されない）
+
+進捗（完了マーク）:
+- [x] 2) `SCHEDULER_REDIS_URL` を `is_secret=true`（非Superuserはマスク）
+- [x] 2) `ACCESS_KEY` 系を再チェックし `is_secret=true`（非Superuserはマスク）
+- [x] 2) Superuserは平文表示可能（既存仕様を維持）
+- 3) Apply反映の成功条件・可観測性を明確化
+  - `ConfigReloadRequest` の結果（成功/失敗/対象ワーカー）をOps UIで確認可能にし、失敗時の再実行手順を定義
+  - Leader不在/到達不能時の扱いを仕様化
+    - UIは「失敗」として明示し、しばらくして再試行する旨をメッセージ表示（例: Notyf error + 再実行ガイド）
+    - 連続失敗時のオペレーション（Leader復旧→再度Apply、等）を手順化
+- 4) Redis高可用“デフォルト”の設計を確定
+  - 採用方式: Sentinel replication をデフォルト（将来拡張でCluster）
+  - アプリ側の接続戦略: Sentinelでmaster自動解決
+  - フェイルオーバ時の接続断/再接続・タイムアウトの標準値を設定化（DBから変更可能に）
+    - 例: connect timeout / socket timeout / retry on timeout / healthcheck interval 等
+    - 反映方法: `SchedulerSettingHelp` + Ops UI（Settings）から変更できることを正とする
+- 5) 「2ノード検証」でどこまでHAを成立させるかを明文化
+  - 2ノードのみだとRedis Sentinelはクォーラム制約で自動フェイルオーバが成立しない/弱い可能性がある
+  - 検証目標を整理（例: “自動フェイルオーバ”まで求めるならwitness/第3障害ドメイン相当が必要、等）
+- 6) ドキュメントの役割分離（AddOnスコープの明確化）
+  - DB/K8sはホストDjangoアプリの設計事項として、Scheduler側ドキュメントでは「検証のための最小構成」までに留める
+  - 依存コンポーネント（Redis等）は“Scheduler同梱/必須”としてセットアップ導線を一本化
+

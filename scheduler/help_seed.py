@@ -5,7 +5,14 @@ from django.db.utils import OperationalError, ProgrammingError
 
 def _is_secret_key(key: str) -> bool:
     u = str(key or "").upper()
-    return ("SECRET" in u) or ("TOKEN" in u) or ("PASSWORD" in u)
+    if ("SECRET" in u) or ("TOKEN" in u) or ("PASSWORD" in u):
+        return True
+    # Keys that commonly embed credentials even if the name doesn't include PASSWORD/TOKEN/SECRET.
+    if u.endswith("_REDIS_URL") or (u == "SCHEDULER_REDIS_URL"):
+        return True
+    if "ACCESS_KEY" in u:
+        return True
+    return False
 
 
 def ensure_setting_help_rows(*, apply_defaults: bool = True) -> None:

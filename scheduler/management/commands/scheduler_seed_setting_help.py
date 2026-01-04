@@ -227,6 +227,7 @@ DEFAULT_HELP: dict[str, dict] = {
         "description": "Leader選出・heartbeat・worker registry に使うRedis接続URL。",
         "impact": "変更すると別クラスタとして扱われ、既存workerと疎通しなくなります。",
         "input_type": "text",
+        "is_secret": True,
         "examples": ["redis://localhost:6379/0"],
     },
     "SCHEDULER_GRPC_HOST": {
@@ -408,6 +409,7 @@ DEFAULT_HELP: dict[str, dict] = {
         "description": "S3互換のアクセスキーID。",
         "impact": "誤ると認証失敗します。",
         "input_type": "text",
+        "is_secret": True,
         "examples": ["minioadmin"],
     },
     "SCHEDULER_LOG_ARCHIVE_SECRET_ACCESS_KEY": {
