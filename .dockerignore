@@ -1,0 +1,12 @@
+.git
+.vscode
+.env
+.env.example
+*.pyc
+__pycache__/
+*.log
+.scheduler-logs/
+venv/
+*.sqlite3
+staticfiles/
+dev-certs/*.key

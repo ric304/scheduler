@@ -1,6 +1,6 @@
 # 開発環境 構築手順（Windows + WSL / ローカル / K8S）
 
-作成日: 2025-12-28（更新: 2026-01-02）
+作成日: 2025-12-28（更新: 2026-01-18）
 
 この手順は、設計書ベースのジョブ実行基盤を **ローカル開発で動かす** ための環境構築を整理したものです。
 
@@ -15,7 +15,13 @@
 
 補足（K8sについて）:
 - ローカル（WSL + docker compose + 複数 `scheduler_worker`）でもフェーズF（実ジョブ実行）まで進められます。
-- 一方で「K8s環境での挙動確認」「CI/CD（GitOps）」「Secrets/TLSマウント」を早期に検証したい場合は、後述の **VM×3（Ubuntu 24.02 LTS）+ k3s** 手順でK8s開発環境を用意できます。
+- 一方で「K8s環境での挙動確認」「CI/CD（GitOps）」「Secrets/TLSマウント」を早期に検証したい場合は、後述の **2ノード最小（Ubuntu 24.02 LTS）+ k3s** 手順でK8s開発環境を用意できます。
+
+※更新（2026-01）:
+- 開発は **K8S中心**へ移行します。
+- 当初のVM×3案に対し、リソース制約のため **2ノード最小構成（control plane×1 + worker×1）** を基本とします。
+- K8S自体の可用性（マルチマスター等）は考慮しません（= control plane は単一）。
+- 一方で Scheduler 側（Worker/Leader/SubLeader）の可用性・フェイルオーバは検証できる構成（最低3 Pod維持など）を目標とします。
 
 ---
 
@@ -299,16 +305,20 @@ VS Code の「Recommended」からまとめてインストールできます。
 
 ---
 
-## 8. K8S開発環境（Ubuntu 24.02 LTS VM×3 / k3s）
+## 8. K8S開発環境（Ubuntu 24.02 LTS / k3s / 2ノード最小）
 
 この章は「K8s環境でSchedulerを動かして検証する」ための最小構成です。
 
-想定:
+想定（最小）:
 - VM1: control plane（例: `k8s-master`）
 - VM2: worker（例: `k8s-worker`）
-- VM3: worker（例: `k8s-worker2`）
 - いずれも Ubuntu 24.02 LTS
-- 3台は相互に疎通可能（固定IP推奨）
+- 2台は相互に疎通可能（固定IP推奨）
+
+スコープ（重要）:
+- K8S自体の可用性は考慮しません（= masterは単一でOK）。
+- Schedulerの可用性は考慮します（例: Workerを3 Pod維持、Leader/SubLeader切替の検証）。
+- ただし「ホスト2台で、ホスト障害まで含むSPOF排除」は原理的に限界があります（後述）。
 
 注意:
 - これはあくまで「K8s上のアプリケーション検証」のための開発環境です。
@@ -382,13 +392,10 @@ VM2で実行（`<MASTER_IP>` と `<TOKEN>` を置換）:
 
 - `curl -sfL https://get.k3s.io | K3S_URL=https://<MASTER_IP>:6443 K3S_TOKEN=<TOKEN> sh -s - agent`
 
-#### 8.2.3 VM3（worker2）
+（任意）追加のworkerを増やす場合:
+- 3台目以降のworkerも同様に join できます（ただし本手順では2ノードを最小とします）。
 
-VM3（`k8s-worker2`）もVM2と同様にjoinします（`<MASTER_IP>` と `<TOKEN>` を置換）:
-
-- `curl -sfL https://get.k3s.io | K3S_URL=https://<MASTER_IP>:6443 K3S_TOKEN=<TOKEN> sh -s - agent`
-
-またはマスターと同じバージョンを明示して agent を入れる場合:
+またはマスターと同じバージョンを明示して agent を入れる場合（VM2/追加worker共通）:
 
 ```bash
 export INSTALL_K3S_VERSION="v1.30.7+k3s1"
@@ -455,6 +462,31 @@ spec: {}
 - `helm repo update`
 - `helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --set crds.enabled=true`
 
+手順まとめ（Ingress/LoadBalancer/TLS｜コピペ用）:
+
+```bash
+# Ingress（ingress-nginx）
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
+helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx -n ingress-nginx --create-namespace
+kubectl get pods -n ingress-nginx -o wide
+
+# LoadBalancer（MetalLB）
+helm repo add metallb https://metallb.github.io/metallb
+helm repo update
+helm upgrade --install metallb metallb/metallb -n metallb-system --create-namespace
+# アドレスプール（metallb-pool.yaml を自環境の未使用IPレンジに合わせて編集）
+kubectl apply -f metallb-pool.yaml
+kubectl get ipaddresspools.metallb.io -n metallb-system
+kubectl get l2advertisements.metallb.io -n metallb-system
+
+# TLS管理（cert-manager）
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --set crds.enabled=true
+kubectl get pods -n cert-manager -o wide
+```
+
 ### 8.5 監視（Prometheus / Alertmanager）
 
 本リポジトリのOps UIは Prometheus/Alertmanager のURLをSettingsから参照できます。
@@ -478,6 +510,30 @@ monitoring-kube-prometheus-prometheus     LoadBalancer   10.43.77.229    192.168
 
 上記３つのSVCをClusterIPからLoadBalancerに変更しているため、`EXTERNAL-IP` に変更し、外部よりアクセス可能に設定する。
 
+手順まとめ（監視｜コピペ用）:
+
+```bash
+# kube-prometheus-stack の導入
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+helm upgrade --install monitoring prometheus-community/kube-prometheus-stack -n monitoring --create-namespace
+
+# 確認（Prometheus / Alertmanager / Grafana）
+kubectl get pods -n monitoring -o wide
+kubectl get svc -n monitoring
+
+# Grafana 管理者パスワード取得
+kubectl --namespace monitoring get secrets monitoring-grafana -o jsonpath="{.data.admin-password}" | base64 -d ; echo
+
+# ローカルアクセス（開発用途）
+kubectl -n monitoring port-forward svc/monitoring-grafana 8080:80
+# open http://127.0.0.1:8080
+
+# Scheduler の内部参照URL（Settingsで利用）
+# Prometheus:   http://monitoring-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+# Alertmanager: http://monitoring-kube-prometheus-alertmanager.monitoring.svc.cluster.local:9093
+```
+
 ### 8.6 依存サービス（Redis / PostgreSQL / MinIO）
 
 ここでは「クラスタ内（K8s上）に Redis / PostgreSQL / MinIO をデプロイする」詳細手順を示します。
@@ -491,7 +547,12 @@ helm repo add bitnami https://charts.bitnami.com/bitnami
 helm repo update
 ```
 
-2) Redis（冗長構成: Sentinel レプリケーション） — k8s-master と k8s-worker に分散配置する例
+2) Redis（冗長構成: replication + sentinel） — 2ノード最小で「可能な範囲で」冗長にする
+
+前提（重要）:
+- 2ノード環境では、Redis Sentinel による **ノード障害を含む完全な自動フェイルオーバ** は成立しない/不安定になり得ます（クォーラムの都合）。
+- 本手順は「K8S自体の可用性を考慮しない」前提で、主に **Pod再起動・ローリング更新・一時的な疎通不良** に対してSchedulerが継続できることを検証する目的の“最小構成”です。
+- ホスト障害まで含めたSPOF排除を本気でやる場合は、3台目（witness/追加ノード）か外部Redis等が必要です。
 
 まずノードにラベルを付けて分散を観察しやすくします（任意）:
 
@@ -514,14 +575,16 @@ master:
     size: 2Gi
   affinity:
     podAntiAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector:
-            matchExpressions:
-              - key: app.kubernetes.io/name
-                operator: In
-                values:
-                  - redis
-          topologyKey: kubernetes.io/hostname
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - redis
+            topologyKey: kubernetes.io/hostname
 replica:
   replicaCount: 2
   persistence:
@@ -529,14 +592,16 @@ replica:
     size: 2Gi
   affinity:
     podAntiAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector:
-            matchExpressions:
-              - key: app.kubernetes.io/name
-                operator: In
-                values:
-                  - redis
-          topologyKey: kubernetes.io/hostname
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - redis
+            topologyKey: kubernetes.io/hostname
 sentinel:
   enabled: true
   replicaCount: 3
@@ -561,10 +626,14 @@ kubectl exec -n scheduler-infra -it <redis-pod> -- redis-cli -a redispassword in
 
 接続と利用上の注意:
 - Scheduler アプリは `SCHEDULER_REDIS_URL` をそのまま `redis.Redis.from_url(...)` に渡す実装です（Sentinel の「master 自動解決」を直接は行いません）。
-- Bitnami Redis（replication + sentinel）を使う場合、アプリの接続先は **master Service** を指定してください: `redis://scheduler-redis-master.scheduler-infra.svc.cluster.local:6379/0`
+- Bitnami Redis（replication + sentinel）を使う場合、アプリの接続先は **master Service** を指定してください（`auth.password` を設定している場合はURLに含める）: `redis://:redispassword@scheduler-redis-master.scheduler-infra.svc.cluster.local:6379/0`
   - フェイルオーバ時は master Pod が切り替わる想定です（切り替え中は接続が一時的に切れる可能性があります）。
 - Sentinel（26379）に直接つないで master を解決したい場合は、アプリ側に Sentinel 設定を追加する実装変更が必要です。
 - 本番ではパスワードを `Secret` にし、PVC サイズとリソース制限を要検討してください。
+
+2ノードでの推奨（検証向け）:
+- Schedulerの `SCHEDULER_REDIS_URL` は master Service（`scheduler-redis-master`）を指定し、まずは「Leader切替・Worker再起動」などの可用性を検証します。
+- Sentinel を“本番相当の可用性”として期待しない（2ノード制約を明記した上で利用）。
 
 3) PostgreSQL（開発向け：単一 Primary）
 
@@ -604,7 +673,7 @@ kubectl -n scheduler-infra create secret generic scheduler-db-credentials \
   --from-literal=DATABASE_URL='postgresql://postgres:postgres@scheduler-postgres-postgresql.scheduler-infra.svc.cluster.local:5432/scheduler'
 
 kubectl -n scheduler-infra create secret generic scheduler-redis-credentials \
-  --from-literal=REDIS_URL='redis://scheduler-redis-master.scheduler-infra.svc.cluster.local:6379/0' \
+  --from-literal=REDIS_URL='redis://:redispassword@scheduler-redis-master.scheduler-infra.svc.cluster.local:6379/0' \
   --from-literal=REDIS_PASSWORD='redispassword'
 
 kubectl -n scheduler-infra create secret generic scheduler-minio-credentials \
@@ -632,6 +701,11 @@ kubectl logs -n scheduler-infra deployment/scheduler-postgres-postgresql
 
 ### 8.7 Scheduler のデプロイ（概要）
 
+2ノード最小での可用性検証ポイント:
+- Workerは **3 Pod** を基本（2ノードでも 2+1 の配置になる）
+- 可能なら PodAntiAffinity / topologySpreadConstraints で「同一ノードへ偏りにくくする」（ただし2ノードなので完全分散は不可）
+- PDB（PodDisruptionBudget）で「同時に落として良い数」を制御（例: `minAvailable: 2`）
+
 ポイント:
 - `SCHEDULER_DEPLOYMENT=k8s` を設定（K8s API healthを有効化）
 - gRPC mTLS の証明書を `Secret` として `/etc/scheduler/tls` にマウント（設計どおり）
@@ -640,6 +714,22 @@ kubectl logs -n scheduler-infra deployment/scheduler-postgres-postgresql
 
 - `kubectl create namespace scheduler`
 - `kubectl -n scheduler create secret generic scheduler-grpc-tls --from-file=tls.crt=dev-certs/tls.crt --from-file=tls.key=dev-certs/tls.key`
+
+例: 接続情報 Secret 作成（`scheduler` namespace / 8.7.1 のマニフェストと一致）
+
+前提:
+- 8.6 の手順で、Redis/PostgreSQL は `scheduler-infra` にデプロイ済み
+- Secret は namespace をまたいで参照できないため、`scheduler-infra` に作った Secret を **`scheduler` にも作成**します
+
+```bash
+kubectl create namespace scheduler
+
+kubectl -n scheduler create secret generic scheduler-db-credentials \
+  --from-literal=DATABASE_URL='postgresql://postgres:postgres@scheduler-postgres-postgresql.scheduler-infra.svc.cluster.local:5432/scheduler'
+
+kubectl -n scheduler create secret generic scheduler-redis-credentials \
+  --from-literal=REDIS_URL='redis://:redispassword@scheduler-redis-master.scheduler-infra.svc.cluster.local:6379/0'
+```
 
 Deployment/StatefulSetの volumeMount（概念）:
 
@@ -653,6 +743,230 @@ volumes:
     secret:
       secretName: scheduler-grpc-tls
 ```
+
+手順まとめ（コピペ用）:
+
+```bash
+# 1) namespace 作成
+kubectl create namespace scheduler
+
+# 2) gRPC mTLS Secret（ローカルの dev-certs を利用）
+kubectl -n scheduler create secret generic scheduler-grpc-tls \
+  --from-file=tls.crt=dev-certs/tls.crt --from-file=tls.key=dev-certs/tls.key
+
+# 3) 接続情報 Secret（Redis / DB）
+kubectl -n scheduler create secret generic scheduler-db-credentials \
+  --from-literal=DATABASE_URL='postgresql://postgres:postgres@scheduler-postgres-postgresql.scheduler-infra.svc.cluster.local:5432/scheduler'
+
+kubectl -n scheduler create secret generic scheduler-redis-credentials \
+  --from-literal=REDIS_URL='redis://:redispassword@scheduler-redis-master.scheduler-infra.svc.cluster.local:6379/0'
+
+# 4) マニフェスト適用（Worker 3 Pod + PDB）
+kubectl apply -f scheduler-worker.yaml
+kubectl apply -f scheduler-worker-pdb.yaml
+
+# 5) 確認
+kubectl get pods -n scheduler -o wide
+kubectl get pdb -n scheduler
+```
+
+注意:
+- Secret は Deployment と同一 namespace（ここでは `scheduler`）に必要です。`scheduler-infra` に作成した Secret は参照できないため、同名で `scheduler` にも作成してください。
+
+#### 8.7.1 最小マニフェスト例（Workerを3 Podで維持）
+
+前提:
+- ここでは **Worker（`manage.py scheduler_worker`）を3 Pod** で常時稼働させ、Leader/SubLeader切替などの挙動を検証します。
+- 2ノード環境では 2+1 の配置になります（完全分散は不可）。
+- ノードが1台に減った場合でも落ちないよう、`topologySpreadConstraints` は `ScheduleAnyway` とし、偏り抑止は“努力目標”にします。
+
+1) Worker Deployment（replicas=3）
+
+例: `scheduler-worker.yaml`
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scheduler-worker
+  namespace: scheduler
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scheduler-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: scheduler-worker
+    spec:
+      containers:
+        - name: worker
+          image: YOUR_IMAGE_HERE
+          imagePullPolicy: IfNotPresent
+          command: ["python", "manage.py", "scheduler_worker", "--grpc-port", "50051"]
+          env:
+            # K8s向け動作モード
+            - name: SCHEDULER_DEPLOYMENT
+              value: "k8s"
+
+            # WorkerがLeaderから到達可能なIP/Node情報を自己申告する
+            - name: SCHEDULER_GRPC_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: SCHEDULER_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+
+            # 接続情報（例）: Secretから注入
+            - name: SCHEDULER_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: scheduler-redis-credentials
+                  key: REDIS_URL
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: scheduler-db-credentials
+                  key: DATABASE_URL
+
+            # gRPC mTLS（設計どおり /etc/scheduler/tls に固定）
+            - name: SCHEDULER_TLS_CERT_FILE
+              value: "/etc/scheduler/tls/tls.crt"
+            - name: SCHEDULER_TLS_KEY_FILE
+              value: "/etc/scheduler/tls/tls.key"
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/scheduler/tls
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: scheduler-grpc-tls
+
+      # 2ノードで3 Podを「なるべく分散」させる（ただし障害時は片寄りを許容）
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values: ["scheduler-worker"]
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: scheduler-worker
+```
+
+2) PDB（同時に落ちてよいPod数を制御）
+
+例: `scheduler-worker-pdb.yaml`
+
+```yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: scheduler-worker-pdb
+  namespace: scheduler
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scheduler-worker
+```
+
+適用（例）:
+
+```bash
+kubectl apply -f scheduler-worker.yaml
+kubectl apply -f scheduler-worker-pdb.yaml
+kubectl get pods -n scheduler -o wide
+kubectl get pdb -n scheduler
+```
+
+補足:
+- `YOUR_IMAGE_HERE` は、Djangoプロジェクト（`manage.py` が存在するイメージ）に置換してください。
+- `scheduler-redis-credentials` / `scheduler-db-credentials` は、直前の「手順まとめ（コピペ用）」のコマンドで `scheduler` に作成できます。
+  - `scheduler-infra` に作成済みの Secret は参照できないため、`scheduler` にも同名で作成してください。
+- 2ノードでも3 Podは維持できますが、1ノード障害時は残り1ノードに寄ります（K8s自体をHAにしない前提のため、ここは割り切り）。
+
+---
+
+## 9. CI/CD（GitHub Actions + GHCR + Argo CD / GitOps）
+
+### 8.8 リソース制約下の開発フロー（WSLなし／単一ホスト）
+
+前提:
+- 本書の推奨は WSL + ローカル検証 → K8S ですが、リソースが足りない場合の“最小で動かす”代替フローです。
+- 目的は「編集→ビルド→K8S デプロイ→確認」のループを、単一ホストでも成立させること。
+
+方針:
+- データベース/Redis/MinIO 等は K8S 上のものを共用（`scheduler-infra` 名前空間のサービスを利用）。
+- `k8s-master` に Docker を導入してもOKですが、用途は“イメージビルド専用”に限定（本番系のミドルは K8S のみを使用）。
+- イメージは K8S（k3s）の containerd に取り込み、Deployment の `image` を差し替えて検証。
+
+手順まとめ（コピペ用｜2通り）:
+
+1) Windows で編集・ビルド → イメージを `k8s-master` に持ち込み
+
+```bash
+# Windows で（PowerShell 等）
+docker build -t scheduler-worker:dev .
+docker save scheduler-worker:dev -o scheduler-worker-dev.tar
+
+# イメージを k8s-master へコピー
+scp scheduler-worker-dev.tar <user>@<k8s-master>:/tmp/
+
+# k8s-master で（SSH接続後 / bash）
+sudo k3s ctr images import /tmp/scheduler-worker-dev.tar
+kubectl -n scheduler set image deployment/scheduler-worker worker=scheduler-worker:dev
+kubectl -n scheduler rollout status deployment/scheduler-worker
+kubectl -n scheduler get pods -o wide
+```
+
+2) `k8s-master` に Docker を導入して現地ビルド（用途は“ビルド”のみに限定）
+
+```bash
+# k8s-master で Docker を導入（Ubuntu系例）
+sudo apt-get update
+sudo apt-get install -y docker.io
+sudo usermod -aG docker $USER
+newgrp docker
+
+# ビルド
+docker build -t scheduler-worker:dev .
+
+# k3s（containerd）へ取り込み
+docker save scheduler-worker:dev | sudo k3s ctr images import -
+
+# デプロイ更新
+kubectl -n scheduler set image deployment/scheduler-worker worker=scheduler-worker:dev
+kubectl -n scheduler rollout status deployment/scheduler-worker
+```
+
+共有DB（K8S Postgres）を使う際の注意:
+- 接続文字列は 8.6 の例を使用: `postgresql://postgres:postgres@scheduler-postgres-postgresql.scheduler-infra.svc.cluster.local:5432/scheduler`
+- 開発/検証と本番はデータベース・資格情報を分ける（最低限、環境毎のSecret分離）。
+- 誤操作防止のため、`scheduler` 名前空間のアプリからのみ到達可能にするネットワーク/権限制御が望ましい。
+
+混在の注意（k8s-master に Docker を入れる場合）:
+- DB/Redis/MinIO などの運用系は「K8Sのみ」を正とし、Docker は“ビルド”用途に限定します。
+- ポートの重複・ボリューム占有に注意（Docker の大容量イメージはディスクを圧迫）。
+- CI/CD を導入できるなら GHCR 経由のビルド/配信がより安全です（9章参照）。
+
+補足: 私（Copilot）による直接デプロイ操作
+- `scheduler` 名前空間に限定権限の ServiceAccount を作成し、`kubectl` での操作権限を委任できます（前述の提案コマンドを参照）。
+- ご提供いただいた `KUBECONFIG`/Token を用いて、VS Code（WSL なしでも可）からデプロイ更新・確認を代行可能です。
+
 
 ---
 
@@ -674,12 +988,40 @@ volumes:
 メモ:
 - GHCR push は `GITHUB_TOKEN` で可能（workflowに `permissions: packages: write` が必要）
 
+#### 9.1.1 GHCR タグ命名（推奨）
+- main安定タグ: `main`（常に最新のmainを指す）
+- イミュータブル: `sha-<GITHUB_SHA_7>`（再現用）
+- PRプレビュー: `pr-<PR_NUMBER>-<GITHUB_SHA_7>`（pushしない運用でも命名を共有）
+- 手動/日付: `manual-<YYYYMMDD>-<short>`（緊急ビルドや検証用）
+
+#### 9.1.2 提供スクリプト
+- GHCRへビルド＆push: [scripts/build_and_push_ghcr.sh](scripts/build_and_push_ghcr.sh)
+- デプロイ差し替え: [scripts/update_worker_image.sh](scripts/update_worker_image.sh)
+
+#### 9.1.3 CIワークフロー雛形
+- サンプル: [.github/workflows/ci.yml](.github/workflows/ci.yml)
+  - PR: `python -m compileall` / `python manage.py check`
+  - main: 上記に加え Docker build（`GHCR_TOKEN` があれば push）、タグは `sha-...` と `main`
+
 ### 9.2 CD（Argo CD）概要
 
 やること:
 - Argo CDをクラスタへ導入
 - 監視対象リポジトリ（GitHub）に `manifests/`（または `helm/`）を置く
 - Argo CD Application で `main` を追従し、自動sync
+
+#### 9.2.1 Application マニフェスト雛形（kustomize不要の最小例）
+- サンプル: [manifests/argo-app.yaml](manifests/argo-app.yaml)
+- 同期対象: [manifests/worker-deployment.yaml](manifests/worker-deployment.yaml), [manifests/worker-pdb.yaml](manifests/worker-pdb.yaml)
+- 使い方（例）:
+  - `kubectl create namespace argocd`
+  - `kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml`
+  - `kubectl apply -f manifests/argo-app.yaml`
+  - Argo CD UI または `argocd app sync scheduler-worker`
+
+注意:
+- `repoURL` を自分のリポジトリに書き換えてください。
+- イメージは `worker-deployment.yaml` の `ghcr.io/YOUR_ORG/scheduler-worker:main` を適宜変更。Secrets（`scheduler-redis-credentials` 等）は別途 `scheduler` namespace に作成済みであることが前提です。
 
 導入（例）:
 - `kubectl create namespace argocd`
@@ -706,7 +1048,7 @@ volumes:
 
 最低限（例）:
 - `DATABASE_URL=postgresql://postgres:postgres@scheduler-postgres-postgresql.scheduler-infra.svc.cluster.local:5432/scheduler`
-- `SCHEDULER_REDIS_URL=redis://scheduler-redis-master.scheduler-infra.svc.cluster.local:6379/0`
+- `SCHEDULER_REDIS_URL=redis://:redispassword@scheduler-redis-master.scheduler-infra.svc.cluster.local:6379/0`
 - `SCHEDULER_DEPLOYMENT=k8s`
 
 TLS（Secretを `/etc/scheduler/tls` にマウントする前提）:

@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scheduler-worker
+  namespace: scheduler
+  labels:
+    app.kubernetes.io/name: scheduler-worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scheduler-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: scheduler-worker
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/YOUR_ORG/scheduler-worker:main
+          imagePullPolicy: IfNotPresent
+          command: ["python", "manage.py", "scheduler_worker", "--grpc-port", "50051"]
+          env:
+            - name: SCHEDULER_DEPLOYMENT
+              value: "k8s"
+            - name: SCHEDULER_GRPC_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: SCHEDULER_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: SCHEDULER_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: scheduler-redis-credentials
+                  key: REDIS_URL
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: scheduler-db-credentials
+                  key: DATABASE_URL
+            - name: SCHEDULER_TLS_CERT_FILE
+              value: "/etc/scheduler/tls/tls.crt"
+            - name: SCHEDULER_TLS_KEY_FILE
+              value: "/etc/scheduler/tls/tls.key"
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/scheduler/tls
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: scheduler-grpc-tls
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - scheduler-worker
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: scheduler-worker
