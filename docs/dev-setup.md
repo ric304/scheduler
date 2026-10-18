@@ -16,12 +16,87 @@
 補足（K8sについて）:
 - ローカル（WSL + docker compose + 複数 `scheduler_worker`）でもフェーズF（実ジョブ実行）まで進められます。
 - 一方で「K8s環境での挙動確認」「CI/CD（GitOps）」「Secrets/TLSマウント」を早期に検証したい場合は、後述の **2ノード最小（Ubuntu 24.02 LTS）+ k3s** 手順でK8s開発環境を用意できます。
+- ただし、開発用途としては **Rancher Desktop + k3d の単一ノード複数クラスター構成** のほうが、**8C/32GB 程度のローカル PC で軽量に動かしやすい**です。
 
 ※更新（2026-01）:
 - 開発は **K8S中心**へ移行します。
 - 当初のVM×3案に対し、リソース制約のため **2ノード最小構成（control plane×1 + worker×1）** を基本とします。
 - K8S自体の可用性（マルチマスター等）は考慮しません（= control plane は単一）。
 - 一方で Scheduler 側（Worker/Leader/SubLeader）の可用性・フェイルオーバは検証できる構成（最低3 Pod維持など）を目標とします。
+- ローカル開発の軽量化のため、**管理クラスター（mgmt-cluster）とワークロードクラスター（workload-cluster）を k3d で 1ノードずつ立ち上げる構成** を推奨します。
+
+### K8S開発の軽量構成（Rancher Desktop + k3d 推奨）
+
+ローカル PC で「管理クラスターから別のクラスターを制御する」開発をする場合、K3d を使って以下のような構成にすると、メモリ使用量を抑えながら複数クラスターを並列に運用できます。
+
+想定構成:
+- `mgmt-cluster`: 管理側クラスター。Cluster API / コントローラー / 自前管理ツールのデプロイ先
+- `workload-cluster`: ターゲットのワークロード用クラスター
+- 両方とも **1ノード（1 server / 0 agent）** にする
+
+この構成の利点:
+- 1クラスターあたりの CPU / RAM 使用量が小さい
+- 8C/32GB の環境でも複数クラスターを同居しやすい
+- マルチクラスター管理の検証や kubeconfig 配布フローを十分に試せる
+
+#### 1) k3d を入れる
+
+WSL またはローカル端末で次を実行します。
+
+```bash
+curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+k3d version
+```
+
+#### 2) 管理クラスターの作成
+
+```bash
+k3d cluster create mgmt-cluster \
+  --servers 1 \
+  --agents 0 \
+  --api-port 6443 \
+  --port "8080:80@loadbalancer"
+```
+
+#### 3) ワークロードクラスターの作成
+
+```bash
+k3d cluster create workload-cluster \
+  --servers 1 \
+  --agents 0 \
+  --api-port 6444 \
+  --port "8081:80@loadbalancer"
+```
+
+#### 4) コンテキスト切り替えと確認
+
+```bash
+kubectl config get-contexts
+
+# 管理クラスターの確認
+kubectl config use-context k3d-mgmt-cluster
+kubectl get nodes
+
+# ワークロードクラスターの確認
+kubectl config use-context k3d-workload-cluster
+kubectl get nodes
+```
+
+#### 5) 実運用メモ
+
+- **Rancher Desktop** は Docker Desktop の代替として動かしやすく、k3d との相性が良い
+- Linux VM / 2ノード k3s 方式は本番寄りの検証に向く一方、ローカル開発では **k3d の 1ノード複数クラスター構成** が最も軽量
+- `mgmt-cluster` 側で `workload-cluster` の kubeconfig を安全に取り扱う仕組みを検証するのに適している
+- 例: Cluster API, 自作 Operator, 管理コントローラー, Cluster Admission / Secret 配布の検証
+
+#### 6) 8C/32GB 環境での推奨設定
+
+- Rancher Desktop の設定で **WSL2 のメモリを 16GB〜20GB 程度** に確保する
+- 1クラスター 1ノードで運用し、複数クラスターを同居させる
+- `k3d` は `~/.kube/config` に context を自動マージするため、切り替えにより各クラスターを個別に操作可能
+- 監視/ログ/Ingress を試す場合でも、シングルノードで全体のメモリ使用量を抑えた運用がしやすい
+
+この構成は、後続の K8s 本番寄り検証（VM + k3s / 2ノード最小構成）と併用しながら、**「ローカルでの高速検証」** と **「本番に近いクラスタ検証」** の両輪として使うのが最も現実的です。
 
 ---
 

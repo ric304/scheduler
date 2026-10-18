@@ -38,7 +38,12 @@ services:
     volumes:
       - scheduler-postgres-data:/var/lib/postgresql/data
 
+  # MinIO is intentionally disabled from the default stack because the public upstream
+  # image names currently used here are no longer resolvable from Docker Hub.
+  # Re-enable by running `docker compose --profile minio up -d` once a valid public tag
+  # is selected for the environment.
   minio:
+    profiles: ["minio"]
     image: minio/minio:latest
     container_name: scheduler-minio
     command: server /data --console-address ":9001"
@@ -52,6 +57,7 @@ services:
       - scheduler-minio-data:/data
 
   minio-init:
+    profiles: ["minio"]
     image: minio/mc:latest
     container_name: scheduler-minio-init
     depends_on:
